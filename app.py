@@ -1,17 +1,14 @@
 """
-Stock Screener & Analysis Dashboard – verbesserte Version
----------------------------------------------------------
-Ziel: Gute Aktien finden, deren Signale historisch auch wirklich funktioniert haben.
+Stock Screener Pro
+------------------
+Lokales Streamlit-Dashboard zum Finden und Prüfen von Aktien.
 
 Features:
-- Technische Analyse: Golden Cross, RSI, MACD, kombiniertes TA-Signal, Fib-Zone
-- Fundamentaldaten + Branchenvergleich (relativ zum Sektor)
-- Piotroski F-Score + Levermann-Score
-- Qualitäts- + Momentum-Score (Composite)
-- Risiko: Beta, Volatilität, Max-Drawdown
-- Erweitertes Backtesting (Golden Cross + TA-Signal)
-- Aufgewerteter Scanner mit Qualitätsfiltern
+- Einzelanalyse: Chart (€), LONG/FLAT/SHORT, Sentiment, Zielpfad, Scores
+- Scanner: US/EU/Asien + Qualitätsfilter + Composite-Score
 - Vergleichs-Matrix, Portfolio-Tracking
+- Vertieftes Backtesting (mehrere Signale, Equity-Kurve, Profit Factor)
+- Branchenvergleich, Piotroski, Levermann, Risiko-Kennzahlen
 
 Start:
     python -m streamlit run app.py
@@ -29,6 +26,49 @@ import yfinance as yf
 from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="Stock Screener Pro", layout="wide", page_icon="📈")
+
+# Plotly: mobil-freundlich (Pinch-Zoom, Pan) + klare Darstellung
+PLOTLY_CONFIG = {
+    "scrollZoom": True,
+    "displayModeBar": True,
+    "displaylogo": False,
+    "responsive": True,
+    "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"],
+    "toImageButtonOptions": {"format": "png", "filename": "chart"},
+}
+
+CHART_LAYOUT = dict(
+    template="plotly_dark",
+    paper_bgcolor="#0e1117",
+    plot_bgcolor="#0e1117",
+    font=dict(family="Inter, system-ui, sans-serif", size=13, color="#e0e0e0"),
+    margin=dict(l=48, r=24, t=48, b=40),
+    legend=dict(
+        orientation="h",
+        yanchor="bottom",
+        y=1.02,
+        xanchor="left",
+        x=0,
+        bgcolor="rgba(0,0,0,0)",
+        font=dict(size=12),
+    ),
+    hovermode="x unified",
+    dragmode="pan",
+    xaxis=dict(
+        showgrid=True,
+        gridcolor="rgba(255,255,255,0.08)",
+        zeroline=False,
+        rangeslider=dict(visible=False),
+        fixedrange=False,  # Zoom/Pan erlauben
+    ),
+    yaxis=dict(
+        showgrid=True,
+        gridcolor="rgba(255,255,255,0.08)",
+        zeroline=False,
+        side="right",
+        fixedrange=False,
+    ),
+)
 
 # ---------------------------------------------------------------------------
 # Lokale Speicherung
@@ -59,7 +99,14 @@ def save_json(path, data):
 BUILTIN_WATCHLISTS = {
     "Tech-Auswahl": ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AMD", "NFLX", "CRM"],
     "DAX-Auswahl (Top 10)": ["SAP.DE", "SIE.DE", "ALV.DE", "DTE.DE", "BAS.DE", "BMW.DE", "MBG.DE", "VOW3.DE", "MUV2.DE", "AIR.DE"],
+    "Europa Blue Chips": [
+        "SAP.DE", "SIE.DE", "ASML.AS", "LVMH.PA", "MC.PA", "OR.PA", "TTE.PA", "SAN.PA",
+        "NESN.SW", "ROG.SW", "NOVN.SW", "AZN.L", "SHEL.L", "HSBA.L", "ULVR.L", "INGA.AS",
+    ],
     "S&P-Auswahl (Auszug)": ["AAPL", "MSFT", "AMZN", "GOOGL", "BRK-B", "JPM", "V", "JNJ", "WMT", "XOM"],
+    "Asia Tech": ["TSM", "ASML", "SONY", "NTDOY", "BABA", "TCEHY", "PDD", "BIDU", "005930.KS", "6861.T"],
+    "Japan (Nikkei-Auswahl)": ["7203.T", "6758.T", "9984.T", "6861.T", "8306.T", "9432.T", "4063.T", "6501.T", "7267.T", "6902.T"],
+    "Hongkong / China": ["0700.HK", "9988.HK", "3690.HK", "9618.HK", "1810.HK", "BABA", "JD", "PDD", "BIDU", "NIO"],
 }
 
 DAX40_TICKERS = [
@@ -67,8 +114,38 @@ DAX40_TICKERS = [
     "CBK.DE", "CON.DE", "1COV.DE", "DHL.DE", "DBK.DE", "DB1.DE", "DTE.DE", "DTG.DE",
     "EOAN.DE", "FRE.DE", "HNR1.DE", "HEI.DE", "HEN3.DE", "IFX.DE", "MBG.DE", "MRK.DE",
     "MTX.DE", "MUV2.DE", "PAH3.DE", "QIA.DE", "RHM.DE", "RWE.DE", "SAP.DE", "SRT3.DE",
-    "SIE.DE", "ENR.DE", "SHL.DE", "SY1.DE", "VOW3.DE", "VNA.DE", "ZAL.DE",
+    "SIE.DE", "ENR.DE", "SHL.DE", "SY1.DE", "VOW3.DE", "VNA.DE", "ZAL.DE", "G24.DE",
 ]
+
+# Frankreich CAC40 (Auswahl, Yahoo-Ticker)
+CAC40_TICKERS = [
+    "MC.PA", "OR.PA", "TTE.PA", "SAN.PA", "AIR.PA", "SU.PA", "AI.PA", "BNP.PA",
+    "DG.PA", "EL.PA", "CS.PA", "BN.PA", "KER.PA", "RI.PA", "STLAP.PA", "VIV.PA",
+    "CAP.PA", "SGO.PA", "HO.PA", "ML.PA",
+]
+
+# Niederlande / Belgien
+BENELUX_TICKERS = [
+    "ASML.AS", "INGA.AS", "PHIA.AS", "AD.AS", "UNA.AS", "HEIA.AS", "PRX.AS",
+    "KBC.BR", "ABI.BR", "ARGX.BR",
+]
+
+# Schweiz
+SWISS_TICKERS = [
+    "NESN.SW", "ROG.SW", "NOVN.SW", "UBSG.SW", "ZURN.SW", "ABBN.SW", "LONN.SW",
+    "CFR.SW", "SIKA.SW", "GIVN.SW",
+]
+
+# UK (FTSE-Auswahl; Yahoo nutzt oft .L)
+UK_TICKERS = [
+    "SHEL.L", "AZN.L", "HSBA.L", "ULVR.L", "BP.L", "GSK.L", "DGE.L", "RIO.L",
+    "BATS.L", "LLOY.L", "VOD.L", "NG.L", "BARC.L", "RR.L", "AAL.L",
+]
+
+# Europa gesamt (Scanner-Universum)
+EUROPE_TICKERS = list(dict.fromkeys(
+    DAX40_TICKERS + CAC40_TICKERS + BENELUX_TICKERS + SWISS_TICKERS + UK_TICKERS
+))
 
 NASDAQ_TICKERS = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AVGO", "PEP", "COST",
@@ -79,6 +156,10 @@ TOP10_CRYPTO = [
     "BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "XRP-USD",
     "DOGE-USD", "ADA-USD", "AVAX-USD", "DOT-USD", "LINK-USD",
 ]
+
+ASIA_TECH = ["TSM", "ASML", "SONY", "NTDOY", "BABA", "TCEHY", "PDD", "BIDU", "005930.KS", "6861.T", "2330.TW"]
+JAPAN_TICKERS = ["7203.T", "6758.T", "9984.T", "6861.T", "8306.T", "9432.T", "4063.T", "6501.T", "7267.T", "6902.T"]
+HK_CHINA = ["0700.HK", "9988.HK", "3690.HK", "9618.HK", "1810.HK", "BABA", "JD", "PDD", "BIDU", "NIO"]
 
 SP500_FALLBACK = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK-B", "JPM", "V",
@@ -108,6 +189,19 @@ COMMON_NAMES = {
     "VISA": "V", "JOHNSON & JOHNSON": "JNJ", "WALMART": "WMT", "EXXON": "XOM",
     "COCA-COLA": "KO", "COCA COLA": "KO", "DISNEY": "DIS", "NIKE": "NKE",
     "MCDONALD'S": "MCD", "MCDONALDS": "MCD", "STARBUCKS": "SBUX", "INTEL": "INTC",
+    "TSMC": "TSM", "TAIWAN SEMICONDUCTOR": "TSM", "SAMSUNG": "005930.KS",
+    "SONY": "SONY", "TOYOTA": "7203.T", "SOFTBANK": "9984.T", "KEYENCE": "6861.T",
+    "ALIBABA": "BABA", "TENCENT": "TCEHY", "NINTENDO": "NTDOY", "ASML": "ASML.AS",
+    "BYD": "BYDDY", "XIAOMI": "1810.HK", "MEITUAN": "3690.HK",
+    "LVMH": "MC.PA", "LOUIS VUITTON": "MC.PA", "LOREAL": "OR.PA", "L'OREAL": "OR.PA",
+    "TOTALENERGIES": "TTE.PA", "TOTAL": "TTE.PA", "SANOFI": "SAN.PA",
+    "NESTLE": "NESN.SW", "NESTLÉ": "NESN.SW", "ROCHE": "ROG.SW", "NOVARTIS": "NOVN.SW",
+    "ASTRAZENECA": "AZN.L", "SHELL": "SHEL.L", "HSBC": "HSBA.L", "UNILEVER": "ULVR.L",
+    "BP": "BP.L", "ING": "INGA.AS", "PHILIPS": "PHIA.AS", "HERMES": "RMS.PA",
+    "HERMÈS": "RMS.PA", "AIRBUS": "AIR.PA", "SCHNEIDER": "SU.PA", "BNP": "BNP.PA",
+    "BNP PARIBAS": "BNP.PA", "UBS": "UBSG.SW", "ZURICH": "ZURN.SW", "ABB": "ABBN.SW",
+    "INFINEON": "IFX.DE", "DEUTSCHE BANK": "DBK.DE", "COMMERZBANK": "CBK.DE",
+    "ADIDAS": "ADS.DE", "BAYER": "BAYN.DE", "HENKEL": "HEN3.DE", "MERCK": "MRK.DE",
 }
 
 
@@ -219,23 +313,66 @@ def compute_risk_metrics(data: pd.DataFrame):
 
 
 @st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600)
+def get_fx_rates() -> dict:
+    """
+    FX-Kurse relativ zu EUR (wie viele Fremdwährungseinheiten für 1 EUR).
+    Damit: EUR-Wert = Preis_fremd / rate[currency]
+    Fallback-Werte falls Yahoo nicht erreichbar.
+    """
+    defaults = {
+        "USD": 1.08,
+        "GBP": 0.86,
+        "CHF": 0.94,
+        "JPY": 160.0,
+        "HKD": 8.4,
+        "KRW": 1450.0,
+        "TWD": 34.0,
+        "EUR": 1.0,
+    }
+    pairs = {
+        "USD": "EURUSD=X",
+        "GBP": "EURGBP=X",
+        "CHF": "EURCHF=X",
+        "JPY": "EURJPY=X",
+        "HKD": "EURHKD=X",
+        "KRW": "EURKRW=X",
+        "TWD": "EURTWD=X",
+    }
+    rates = dict(defaults)
+    for cur, pair in pairs.items():
+        try:
+            h = yf.Ticker(pair).history(period="5d")
+            if not h.empty:
+                rates[cur] = float(h["Close"].iloc[-1])
+        except Exception:
+            pass
+    rates["EUR"] = 1.0
+    return rates
+
+
 def get_eur_usd_rate() -> float:
-    """Aktueller EUR/USD-Kurs (wie viele USD für 1 EUR). Fallback 1.08."""
-    try:
-        t = yf.Ticker("EURUSD=X")
-        h = t.history(period="5d")
-        if not h.empty:
-            return float(h["Close"].iloc[-1])
-    except Exception:
-        pass
-    return 1.08
+    """Kompatibilität: EUR/USD aus get_fx_rates."""
+    return float(get_fx_rates().get("USD", 1.08))
 
 
 def detect_currency(ticker: str, info: dict | None = None) -> str:
-    """Best-effort Währung: EUR für .DE/.PA etc., sonst aus info oder USD."""
+    """Best-effort Währung: EUR/JPY/HKD/KRW/TWD aus Suffix oder info, sonst USD."""
     t = ticker.upper()
     if t.endswith((".DE", ".PA", ".AS", ".BR", ".MI", ".MC", ".HE", ".ST", ".OL", ".LS", ".VI")):
         return "EUR"
+    if t.endswith(".L"):
+        return "GBP"
+    if t.endswith(".SW"):
+        return "CHF"
+    if t.endswith(".T"):
+        return "JPY"
+    if t.endswith(".HK"):
+        return "HKD"
+    if t.endswith(".KS") or t.endswith(".KQ"):
+        return "KRW"
+    if t.endswith(".TW"):
+        return "TWD"
     if t.endswith("-USD") or t.endswith("=X"):
         return "USD"
     if info:
@@ -245,32 +382,53 @@ def detect_currency(ticker: str, info: dict | None = None) -> str:
     return "USD"
 
 
-def to_eur(value, currency: str, eur_usd: float):
-    """Konvertiert einen Zahlenwert nach EUR (falls USD)."""
+def to_eur(value, currency: str, eur_usd: float = None, rates: dict | None = None):
+    """Konvertiert einen Preis in EUR. rates = get_fx_rates(); eur_usd optional Fallback."""
     if value is None:
         return None
     try:
         v = float(value)
     except Exception:
         return None
-    if currency == "EUR":
+    cur = (currency or "USD").upper()
+    if cur == "EUR":
         return v
-    if currency == "USD" and eur_usd and eur_usd > 0:
-        return v / eur_usd
-    return v  # andere Währungen unverändert lassen
+    if rates is None:
+        rates = {}
+        if eur_usd:
+            rates["USD"] = eur_usd
+    rate = rates.get(cur)
+    if rate is None and cur == "USD" and eur_usd:
+        rate = eur_usd
+    if rate and rate > 0:
+        return v / rate
+    return v
 
 
-def format_price_eur(value, currency: str, eur_usd: float) -> str:
+def format_price_eur(value, currency: str, eur_usd: float = None, rates: dict | None = None) -> str:
     if value is None:
         return "—"
-    eur_val = to_eur(value, currency, eur_usd)
+    try:
+        v = float(value)
+    except Exception:
+        return "—"
+    cur = (currency or "USD").upper()
+    symbols = {
+        "USD": "$", "GBP": "£", "CHF": "CHF", "JPY": "¥",
+        "HKD": "HK$", "KRW": "₩", "TWD": "NT$", "EUR": "€",
+    }
+    if rates is None:
+        rates = get_fx_rates()
+        if eur_usd:
+            rates = dict(rates)
+            rates["USD"] = eur_usd
+    eur_val = to_eur(v, cur, eur_usd=eur_usd, rates=rates)
     if eur_val is None:
         return "—"
-    if currency == "EUR":
-        return f"{eur_val:.2f} €"
-    if currency == "USD":
-        return f"{eur_val:.2f} €  ({float(value):.2f} $)"
-    return f"{eur_val:.2f} €"
+    if cur == "EUR":
+        return f"{v:.2f} €"
+    sym = symbols.get(cur, cur)
+    return f"{eur_val:.2f} €  ({v:.2f} {sym})"
 
 
 def last_golden_cross_date(data: pd.DataFrame):
@@ -304,6 +462,175 @@ def last_buy_signal_date(data: pd.DataFrame):
     if len(hits) == 0:
         return None
     return hits[-1]
+
+
+
+def compute_signal_status(data: pd.DataFrame):
+    """
+    Liefert LONG / FLAT / SHORT inkl. seit-Datum und Performance seit Signal.
+    LONG  = bullischer Trend (SMA50 > SMA200) und kein extremes Overbought
+    SHORT = bärischer Trend
+    FLAT  = unsicher / seitwärts / kein klares Signal
+    """
+    if data.empty or "SMA50" not in data.columns:
+        return {"status": "FLAT", "label": "⚪ FLAT", "since": None, "perf_pct": None, "days": None}
+
+    df = data.dropna(subset=["SMA50", "SMA200", "Close"]).copy()
+    if len(df) < 50:
+        return {"status": "FLAT", "label": "⚪ FLAT", "since": None, "perf_pct": None, "days": None}
+
+    last = df.iloc[-1]
+    bull = bool(last["SMA50"] > last["SMA200"])
+    rsi = float(df["RSI"].iloc[-1]) if "RSI" in df.columns and not pd.isna(df["RSI"].iloc[-1]) else 50.0
+
+    # Finde Beginn des aktuellen Trends (letzter Cross)
+    df["diff"] = df["SMA50"] - df["SMA200"]
+    df["cross_up"] = (df["diff"].shift(1) < 0) & (df["diff"] > 0)
+    df["cross_dn"] = (df["diff"].shift(1) > 0) & (df["diff"] < 0)
+
+    if bull:
+        status = "LONG"
+        label = "🟢 LONG"
+        crosses = df[df["cross_up"]].index
+    else:
+        status = "SHORT"
+        label = "🔴 SHORT"
+        crosses = df[df["cross_dn"]].index
+
+    # Bei extremem RSI eher FLAT (Überkauft/Überverkauft-Warnung)
+    if status == "LONG" and rsi > 75:
+        status, label = "FLAT", "🟡 FLAT"
+    elif status == "SHORT" and rsi < 25:
+        status, label = "FLAT", "🟡 FLAT"
+
+    since = crosses[-1] if len(crosses) else None
+    perf_pct = None
+    days = None
+    if since is not None:
+        entry = float(df.loc[since, "Close"])
+        now = float(last["Close"])
+        if entry > 0:
+            perf_pct = (now / entry - 1) * 100
+        days = (df.index[-1] - since).days
+
+    return {
+        "status": status,
+        "label": label,
+        "since": since,
+        "perf_pct": round(perf_pct, 1) if perf_pct is not None else None,
+        "days": days,
+    }
+
+
+def compute_sentiment(data: pd.DataFrame) -> dict:
+    """
+    Einfaches Sentiment 0–100 (0=extreme Angst, 100=extreme Gier).
+    Basiert auf RSI + kurzfristigem Momentum.
+    """
+    if data.empty or "RSI" not in data.columns:
+        return {"score": 50, "label": "Neutral", "color": "gray"}
+
+    rsi = data["RSI"].dropna()
+    if rsi.empty:
+        return {"score": 50, "label": "Neutral", "color": "gray"}
+
+    last_rsi = float(rsi.iloc[-1])
+    # Momentum 20 Tage
+    closes = data["Close"].dropna()
+    mom = 0.0
+    if len(closes) > 20:
+        mom = float(closes.iloc[-1] / closes.iloc[-20] - 1) * 100
+
+    # Score: RSI 50% + Momentum skaliert 50%
+    # mom typisch -15..+15 → map auf 0..100
+    mom_score = max(0, min(100, 50 + mom * 2.5))
+    score = 0.6 * last_rsi + 0.4 * mom_score
+    score = int(max(0, min(100, round(score))))
+
+    if score >= 75:
+        label, color = "Extreme Gier", "#e74c3c"
+    elif score >= 60:
+        label, color = "Gier", "#e67e22"
+    elif score >= 40:
+        label, color = "Neutral", "#f1c40f"
+    elif score >= 25:
+        label, color = "Angst", "#3498db"
+    else:
+        label, color = "Extreme Angst", "#2ecc71"
+
+    return {"score": score, "label": label, "color": color, "rsi": round(last_rsi, 1)}
+
+
+def compute_zielpfad(data: pd.DataFrame, fundamentals: dict, fx: float = 1.0) -> list:
+    """
+    Zielpfad analog M&T: mehrere Kursziele aus Fib + Analysten.
+    Alle Werte in Chart-Währung (bereits * fx für EUR-Anzeige).
+    """
+    if data.empty:
+        return []
+
+    last = float(data["Close"].iloc[-1]) * fx
+    fib = compute_fib_entry_zone(data)
+    t_low = fundamentals.get("Analysten-Kursziel (niedrig)")
+    t_mean = fundamentals.get("Analysten-Kursziel (mittel)")
+    t_high = fundamentals.get("Analysten-Kursziel (hoch)")
+
+    targets = []
+    # ZIEL 1: nahes Widerstand / Fib-Oberkante oder leicht über Kurs
+    if fib:
+        z1 = max(fib[1] * fx, last * 1.03)
+    else:
+        z1 = last * 1.05
+    targets.append({"name": "ZIEL 1", "kurs": z1, "typ": "nah"})
+
+    # ZIEL 2: Analyst Mean oder +10%
+    if t_mean:
+        z2 = float(t_mean) * fx
+    else:
+        z2 = last * 1.10
+    if z2 <= z1:
+        z2 = z1 * 1.05
+    targets.append({"name": "ZIEL 2", "kurs": z2, "typ": "mittel"})
+
+    # ZIEL 3: zwischen Mean und High
+    if t_high and t_mean:
+        z3 = (float(t_mean) + float(t_high)) / 2 * fx
+    elif t_high:
+        z3 = float(t_high) * fx * 0.92
+    else:
+        z3 = last * 1.18
+    if z3 <= z2:
+        z3 = z2 * 1.06
+    targets.append({"name": "ZIEL 3", "kurs": z3, "typ": "gestreckt"})
+
+    # ZIEL 4 Best Case: Analyst High oder +25%
+    if t_high:
+        z4 = float(t_high) * fx
+    else:
+        z4 = last * 1.25
+    if z4 <= z3:
+        z4 = z3 * 1.08
+    targets.append({"name": "ZIEL 4 · Best Case", "kurs": z4, "typ": "best"})
+
+    # Risiko: unter letztem Swing / -8%
+    risk = last * 0.92
+    if fib:
+        risk = min(risk, fib[0] * fx)
+
+    for t in targets:
+        t["weg_pct"] = (t["kurs"] / last - 1) * 100
+        t["status"] = "erreicht" if last >= t["kurs"] else "aktiv"
+        # grobe Chance-Schätzung (näher = höher)
+        if t["weg_pct"] < 5:
+            t["chance"] = 55
+        elif t["weg_pct"] < 12:
+            t["chance"] = 40
+        elif t["weg_pct"] < 20:
+            t["chance"] = 25
+        else:
+            t["chance"] = 12
+
+    return {"targets": targets, "risk": risk, "risk_pct": (risk / last - 1) * 100, "last": last}
 
 
 # ---------------------------------------------------------------------------
@@ -551,64 +878,158 @@ def compute_composite_score(p_score, p_max, l_score, val_score, ta_signal, r6):
 # Backtesting
 # ---------------------------------------------------------------------------
 def _find_signal_dates(data: pd.DataFrame, signal_type: str = "golden"):
-    df = data.dropna(subset=["SMA50", "SMA200", "Close", "RSI"]).copy()
-    if len(df) < 250:
+    """Findet historische Signal-Zeitpunkte für verschiedene Strategien."""
+    need = ["SMA50", "SMA200", "Close", "RSI"]
+    if signal_type in ("macd", "macd_cross"):
+        need += ["MACD", "MACD_signal"]
+    df = data.dropna(subset=[c for c in need if c in data.columns]).copy()
+    if len(df) < 200:
         return []
+
     if signal_type == "golden":
         df["diff"] = df["SMA50"] - df["SMA200"]
         df["signal"] = (df["diff"].shift(1) < 0) & (df["diff"] > 0)
-    else:
+    elif signal_type == "death":
+        df["diff"] = df["SMA50"] - df["SMA200"]
+        df["signal"] = (df["diff"].shift(1) > 0) & (df["diff"] < 0)
+    elif signal_type == "rsi_oversold":
+        # RSI kommt aus dem überverkauften Bereich (<30) zurück über 30
+        df["signal"] = (df["RSI"].shift(1) < 30) & (df["RSI"] >= 30)
+    elif signal_type == "rsi_overbought":
+        df["signal"] = (df["RSI"].shift(1) > 70) & (df["RSI"] <= 70)
+    elif signal_type == "macd":
+        if "MACD" not in df.columns:
+            return []
+        df["signal"] = (df["MACD"].shift(1) < df["MACD_signal"].shift(1)) & (df["MACD"] >= df["MACD_signal"])
+    elif signal_type == "ta":
         df["diff"] = df["SMA50"] - df["SMA200"]
         df["gc"] = (df["diff"].shift(1) < 0) & (df["diff"] > 0)
         df["bull"] = df["SMA50"] > df["SMA200"]
-        df["signal"] = df["gc"] | (df["bull"] & (df["RSI"] < 70) & (df["RSI"].shift(1) >= 70))
+        df["rsi_entry"] = df["bull"] & (df["RSI"] < 70) & (df["RSI"].shift(1) >= 70)
+        df["signal"] = df["gc"] | df["rsi_entry"]
         df["signal"] = df["signal"] & ~df["signal"].shift(1).fillna(False)
+    else:
+        return []
     return df[df["signal"]].index.tolist()
 
 
-def backtest_signals(data: pd.DataFrame, signal_type: str = "golden", forward_days_list=(21, 63, 126)):
+def backtest_signals(
+    data: pd.DataFrame,
+    signal_type: str = "golden",
+    forward_days_list=(21, 63, 126),
+    hold_days: int | None = None,
+):
+    """
+    Vertieftes Backtesting:
+    - Fixed-Horizon Returns (1M/3M/6M)
+    - Optional feste Haltedauer (hold_days)
+    - Profit Factor, Avg Win/Loss, Max Consecutive Losses
+    - Equity-Kurve (kumulierte Signal-Returns bei fester Haltedauer)
+    """
     crosses = _find_signal_dates(data, signal_type)
     if not crosses:
-        return {"count": 0, "summary": {}, "details": []}
-    df = data.dropna(subset=["Close"])
+        return {"count": 0, "summary": {}, "details": [], "equity": []}
+
+    df = data.dropna(subset=["Close"]).copy()
     results = []
+    fixed_returns = []  # für Equity bei hold_days
+
     for dt in crosses:
         try:
-            entry_price = df.loc[dt, "Close"]
+            entry_price = float(df.loc[dt, "Close"])
             idx = df.index.get_loc(dt)
+            if isinstance(idx, slice):
+                continue
         except Exception:
             continue
-        row = {"Datum": dt.strftime("%Y-%m-%d")}
+
+        row = {
+            "Datum": dt.strftime("%Y-%m-%d"),
+            "Einstieg": round(entry_price, 2),
+        }
+
+        # Fixed-horizon returns
         for days in forward_days_list:
             future_idx = idx + days
             if future_idx < len(df):
-                future_price = df.iloc[future_idx]["Close"]
+                future_price = float(df.iloc[future_idx]["Close"])
                 ret = (future_price / entry_price - 1) * 100
                 row[f"Rendite {days}T"] = round(ret, 2)
             else:
                 row[f"Rendite {days}T"] = None
+
+        # Max DD in den nächsten 126 Tagen
         end_idx = min(idx + 126, len(df) - 1)
         window = df.iloc[idx:end_idx + 1]["Close"]
         if len(window) > 1:
             peak = window.cummax()
-            dd = ((window - peak) / peak * 100).min()
+            dd = float(((window - peak) / peak * 100).min())
             row["Max DD 6M"] = round(dd, 2)
         else:
             row["Max DD 6M"] = None
+
+        # Feste Haltedauer (für Equity-Kurve)
+        hd = hold_days or 63
+        exit_idx = idx + hd
+        if exit_idx < len(df):
+            exit_price = float(df.iloc[exit_idx]["Close"])
+            hold_ret = (exit_price / entry_price - 1) * 100
+            row[f"Hold {hd}T"] = round(hold_ret, 2)
+            fixed_returns.append(hold_ret)
+        else:
+            row[f"Hold {hd}T"] = None
+
         results.append(row)
+
+    # --- Summary-Statistiken ---
     summary = {"count": len(results)}
     for days in forward_days_list:
         col = f"Rendite {days}T"
         vals = [r[col] for r in results if r[col] is not None]
         if vals:
+            wins = [v for v in vals if v > 0]
+            losses = [v for v in vals if v <= 0]
             summary[f"Ø {days}T"] = round(float(np.mean(vals)), 2)
-            summary[f"Trefferquote {days}T"] = round(sum(1 for v in vals if v > 0) / len(vals) * 100, 1)
             summary[f"Median {days}T"] = round(float(np.median(vals)), 2)
+            summary[f"Trefferquote {days}T"] = round(len(wins) / len(vals) * 100, 1)
+            summary[f"Best {days}T"] = round(float(np.max(vals)), 2)
+            summary[f"Worst {days}T"] = round(float(np.min(vals)), 2)
+            if wins:
+                summary[f"Ø Win {days}T"] = round(float(np.mean(wins)), 2)
+            if losses:
+                summary[f"Ø Loss {days}T"] = round(float(np.mean(losses)), 2)
+            # Profit Factor
+            gross_win = sum(wins) if wins else 0
+            gross_loss = abs(sum(losses)) if losses else 0
+            summary[f"PF {days}T"] = round(gross_win / gross_loss, 2) if gross_loss > 0 else None
         else:
-            summary[f"Ø {days}T"] = None
-            summary[f"Trefferquote {days}T"] = None
-            summary[f"Median {days}T"] = None
-    return {"count": len(results), "summary": summary, "details": results}
+            for k in (f"Ø {days}T", f"Median {days}T", f"Trefferquote {days}T",
+                      f"Best {days}T", f"Worst {days}T", f"PF {days}T"):
+                summary[k] = None
+
+    # Consecutive losses (auf 63T-Horizont)
+    vals_63 = [r.get("Rendite 63T") for r in results if r.get("Rendite 63T") is not None]
+    max_consec_loss = 0
+    cur = 0
+    for v in vals_63:
+        if v <= 0:
+            cur += 1
+            max_consec_loss = max(max_consec_loss, cur)
+        else:
+            cur = 0
+    summary["max_consec_loss"] = max_consec_loss
+
+    # Equity-Kurve (kumuliert, feste Haltedauer)
+    equity = []
+    cum = 0.0
+    for i, r in enumerate(fixed_returns):
+        cum += r
+        equity.append({"Signal #": i + 1, "Trade %": round(r, 2), "Kumuliert %": round(cum, 2)})
+
+    summary["equity_final"] = round(cum, 2) if fixed_returns else None
+    summary["hold_days"] = hold_days or 63
+
+    return {"count": len(results), "summary": summary, "details": results, "equity": equity, "signal_dates": crosses}
 
 
 # ---------------------------------------------------------------------------
@@ -646,19 +1067,23 @@ if mode == "📊 Einzelanalyse":
             r6 = price_return(data, 126)
             r12 = price_return(data, 252)
 
-            # Währung & EUR-Umrechnung
+            # Währung & EUR-Umrechnung (USD, GBP, CHF, JPY, HKD, …)
             currency = detect_currency(ticker, fundamentals)
-            eur_usd = get_eur_usd_rate()
-            # Faktor: USD -> EUR (dividieren durch EURUSD)
-            fx = (1.0 / eur_usd) if (currency == "USD" and eur_usd and eur_usd > 0) else 1.0
+            rates = get_fx_rates()
+            eur_usd = rates.get("USD", 1.08)
+            rate = rates.get(currency, 1.0)
+            # Multiplikator: Original -> EUR
+            fx = (1.0 / rate) if (currency != "EUR" and rate and rate > 0) else 1.0
             last_price = float(data["Close"].iloc[-1])
             last_price_eur = last_price * fx
-            if currency == "USD":
-                price_eur_str = f"{last_price_eur:.2f} €"
-                price_sub = f"Original: {last_price:.2f} $"
-            else:
+            symbols = {"USD": "$", "GBP": "£", "CHF": "CHF", "JPY": "¥", "HKD": "HK$", "KRW": "₩", "TWD": "NT$"}
+            if currency == "EUR":
                 price_eur_str = f"{last_price:.2f} €"
                 price_sub = "Originalwährung EUR"
+            else:
+                sym = symbols.get(currency, currency)
+                price_eur_str = f"{last_price_eur:.2f} €"
+                price_sub = f"Original: {last_price:.2f} {sym}"
 
             # Chart-Daten in EUR umrechnen (nur Preisachsen, RSI/MACD bleiben unverändert)
             plot = data.copy()
@@ -672,14 +1097,38 @@ if mode == "📊 Einzelanalyse":
             gc_date_str = gc_date.strftime("%d.%m.%Y") if gc_date is not None else "—"
             buy_date_str = buy_date.strftime("%d.%m.%Y") if buy_date is not None else "—"
 
+            sig = compute_signal_status(data)
+            sent = compute_sentiment(data)
+
             c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("Kurs", price_eur_str, price_sub)
-            c2.metric("Trend", "🟢 Bullisch" if bullish else "🔴 Bärisch")
+            c2.metric("System-Status", sig["label"])
             c3.metric("Golden Cross", "✅ Ja" if golden else "—")
             c4.metric("TA-Signal", ta_signal)
             c5.metric("Sektor", str(fundamentals.get("Sektor", "—"))[:18])
 
-            # Signal-Historie-Zeile
+            # Signal-Box (ähnlich M&T)
+            st.markdown("#### 📡 System-Signal")
+            b1, b2, b3, b4 = st.columns(4)
+            b1.metric("Status", sig["label"])
+            if sig["since"] is not None:
+                b2.metric("Seit", sig["since"].strftime("%d.%m.%Y"))
+            else:
+                b2.metric("Seit", "—")
+            b3.metric("Performance seit Signal",
+                      f"{sig['perf_pct']:+.1f} %" if sig["perf_pct"] is not None else "—")
+            b4.metric("Haltedauer", f"{sig['days']} Tage" if sig["days"] is not None else "—")
+
+            # Sentiment-Anzeige
+            st.markdown("#### 🌡️ Markt-Sentiment (Aktie)")
+            s1, s2, s3 = st.columns([2, 1, 1])
+            with s1:
+                st.progress(sent["score"] / 100)
+            s2.metric("Score", f"{sent['score']} / 100")
+            s3.metric("Lage", sent["label"])
+            st.caption(f"RSI: {sent.get('rsi', '—')} · 0 = Extreme Angst · 100 = Extreme Gier")
+
+            # Signal-Historie
             sc1, sc2, sc3 = st.columns(3)
             sc1.metric("Letztes Golden Cross", gc_date_str)
             sc2.metric("Letztes Kaufsignal", buy_date_str)
@@ -696,10 +1145,18 @@ if mode == "📊 Einzelanalyse":
             )
             fig.add_trace(go.Candlestick(
                 x=plot.index, open=plot["Open"], high=plot["High"],
-                low=plot["Low"], close=plot["Close"], name="Kurs €"
+                low=plot["Low"], close=plot["Close"], name="Kurs €",
+                increasing_line_color="#26a69a", increasing_fillcolor="#26a69a",
+                decreasing_line_color="#ef5350", decreasing_fillcolor="#ef5350",
             ), row=1, col=1)
-            fig.add_trace(go.Scatter(x=plot.index, y=plot["SMA50"], name="SMA50", line=dict(color="orange")), row=1, col=1)
-            fig.add_trace(go.Scatter(x=plot.index, y=plot["SMA200"], name="SMA200", line=dict(color="blue")), row=1, col=1)
+            fig.add_trace(go.Scatter(
+                x=plot.index, y=plot["SMA50"], name="SMA50",
+                line=dict(color="#ffb74d", width=1.8),
+            ), row=1, col=1)
+            fig.add_trace(go.Scatter(
+                x=plot.index, y=plot["SMA200"], name="SMA200",
+                line=dict(color="#42a5f5", width=1.8),
+            ), row=1, col=1)
             for key, color, label in [
                 ("Analysten-Kursziel (niedrig)", "#2ca02c", "Min"),
                 ("Analysten-Kursziel (mittel)", "#1f77b4", "Normal"),
@@ -714,14 +1171,57 @@ if mode == "📊 Einzelanalyse":
             if fib:
                 fig.add_hrect(y0=fib[0] * fx, y1=fib[1] * fx, fillcolor="green", opacity=0.15,
                               annotation_text="Fib-Einstiegszone", row=1, col=1)
-            fig.add_trace(go.Scatter(x=data.index, y=data["RSI"], name="RSI", line=dict(color="purple")), row=2, col=1)
-            fig.add_hline(y=70, line_dash="dot", line_color="red", row=2, col=1)
-            fig.add_hline(y=30, line_dash="dot", line_color="green", row=2, col=1)
-            fig.add_trace(go.Scatter(x=data.index, y=data["MACD"], name="MACD", line=dict(color="blue")), row=3, col=1)
-            fig.add_trace(go.Scatter(x=data.index, y=data["MACD_signal"], name="Signal", line=dict(color="orange")), row=3, col=1)
-            fig.add_trace(go.Bar(x=data.index, y=data["MACD_hist"], name="Hist"), row=3, col=1)
-            fig.update_layout(height=780, xaxis_rangeslider_visible=False, template="plotly_dark")
-            st.plotly_chart(fig, use_container_width=True)
+            fig.add_trace(go.Scatter(
+                x=data.index, y=data["RSI"], name="RSI",
+                line=dict(color="#ce93d8", width=1.6),
+            ), row=2, col=1)
+            fig.add_hline(y=70, line_dash="dot", line_color="rgba(239,83,80,0.7)", row=2, col=1)
+            fig.add_hline(y=30, line_dash="dot", line_color="rgba(38,166,154,0.7)", row=2, col=1)
+            fig.add_hline(y=50, line_dash="dot", line_color="rgba(255,255,255,0.15)", row=2, col=1)
+            fig.add_trace(go.Scatter(
+                x=data.index, y=data["MACD"], name="MACD",
+                line=dict(color="#64b5f6", width=1.5),
+            ), row=3, col=1)
+            fig.add_trace(go.Scatter(
+                x=data.index, y=data["MACD_signal"], name="Signal",
+                line=dict(color="#ffb74d", width=1.5),
+            ), row=3, col=1)
+            colors = ["#26a69a" if v >= 0 else "#ef5350" for v in data["MACD_hist"].fillna(0)]
+            fig.add_trace(go.Bar(
+                x=data.index, y=data["MACD_hist"], name="Hist",
+                marker_color=colors, opacity=0.7,
+            ), row=3, col=1)
+            fig.update_layout(
+                **CHART_LAYOUT,
+                height=720,
+                xaxis_rangeslider_visible=False,
+                xaxis_title=None,
+                yaxis_title="Kurs €",
+                yaxis2=dict(showgrid=True, gridcolor="rgba(255,255,255,0.06)", fixedrange=False, title="RSI"),
+                yaxis3=dict(showgrid=True, gridcolor="rgba(255,255,255,0.06)", fixedrange=False, title="MACD"),
+            )
+            # Subplot-Achsen Zoom erlauben
+            fig.update_xaxes(fixedrange=False, showgrid=True, gridcolor="rgba(255,255,255,0.08)")
+            fig.update_yaxes(fixedrange=False)
+            st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+            st.caption("📱 Handy: mit zwei Fingern zoomen, mit einem Finger schieben · Desktop: Mausrad zoomen, ziehen zum Verschieben")
+
+            # ---- Zielpfad ----
+            zp = compute_zielpfad(data, fundamentals, fx=fx)
+            if zp and zp.get("targets"):
+                st.markdown("#### 🎯 Zielpfad")
+                zcols = st.columns(len(zp["targets"]) + 1)
+                for i, t in enumerate(zp["targets"]):
+                    with zcols[i]:
+                        status_icon = "✅" if t["status"] == "erreicht" else "▶️"
+                        st.metric(
+                            f"{status_icon} {t['name']}",
+                            f"{t['kurs']:.2f} €",
+                            f"{t['weg_pct']:+.1f}% · Chance ~{t['chance']}%",
+                        )
+                with zcols[-1]:
+                    st.metric("⚠️ Risiko", f"{zp['risk']:.2f} €", f"{zp['risk_pct']:+.1f}%")
+                st.caption("Ziele aus Fibonacci-Zone + Analysten-Kurszielen abgeleitet. Keine Garantie.")
 
             st.subheader("⚠️ Risiko")
             rc1, rc2, rc3, rc4 = st.columns(4)
@@ -807,16 +1307,42 @@ if mode == "📊 Einzelanalyse":
 elif mode == "🔍 Scanner":
     st.title("🔍 Long-Signal- & Qualitäts-Scanner")
     universe = st.selectbox("Universum", [
-        "Tech-Auswahl", "DAX-Auswahl (Top 10)", "S&P-Auswahl (Auszug)",
-        "🌍 Große Auswahl (S&P500 + DAX + Nasdaq)", "🪙 Top 10 Krypto", "Eigene Liste"
+        "Tech-Auswahl",
+        "🇩🇪 DAX 40",
+        "🇫🇷 CAC 40 (Auswahl)",
+        "🇪🇺 Europa gesamt (DAX+CAC+Benelux+CH+UK)",
+        "Europa Blue Chips",
+        "S&P-Auswahl (Auszug)",
+        "🌏 Asia Tech",
+        "🇯🇵 Japan (Nikkei-Auswahl)",
+        "🇭🇰 Hongkong / China",
+        "🌍 Große Auswahl (S&P + Europa + Nasdaq)",
+        "🪙 Top 10 Krypto",
+        "Eigene Liste",
     ])
-    if universe == "🌍 Große Auswahl (S&P500 + DAX + Nasdaq)":
-        tickers = list(set(fetch_sp500_tickers() + DAX40_TICKERS + NASDAQ_TICKERS))
-        st.warning(f"Scannt ca. {len(tickers)} Ticker – dauert 2–5 Minuten.")
+    if universe == "🌍 Große Auswahl (S&P + Europa + Nasdaq)":
+        tickers = list(set(fetch_sp500_tickers() + EUROPE_TICKERS + NASDAQ_TICKERS))
+        st.warning(f"Scannt ca. {len(tickers)} Ticker – dauert mehrere Minuten.")
+    elif universe == "🇪🇺 Europa gesamt (DAX+CAC+Benelux+CH+UK)":
+        tickers = EUROPE_TICKERS
+        st.info(f"Europa-Universum: {len(tickers)} Ticker (DE, FR, NL/BE, CH, UK).")
+    elif universe == "🇩🇪 DAX 40":
+        tickers = DAX40_TICKERS
+    elif universe == "🇫🇷 CAC 40 (Auswahl)":
+        tickers = CAC40_TICKERS
     elif universe == "🪙 Top 10 Krypto":
         tickers = TOP10_CRYPTO
+    elif universe == "🌏 Asia Tech":
+        tickers = ASIA_TECH
+    elif universe == "🇯🇵 Japan (Nikkei-Auswahl)":
+        tickers = JAPAN_TICKERS
+    elif universe == "🇭🇰 Hongkong / China":
+        tickers = HK_CHINA
     elif universe == "Eigene Liste":
-        custom = st.text_input("Ticker / Namen (kommagetrennt)", "Apple, Microsoft, SAP, NVIDIA, ASML")
+        custom = st.text_input(
+            "Ticker / Namen (kommagetrennt)",
+            "SAP, ASML, LVMH, Nestle, Shell, AstraZeneca",
+        )
         tickers = [resolve_ticker(t.strip()) for t in custom.split(",") if t.strip()]
     else:
         tickers = BUILTIN_WATCHLISTS.get(universe, [])
@@ -853,23 +1379,26 @@ elif mode == "🔍 Scanner":
                     continue
                 vol, max_dd = compute_risk_metrics(data)
                 cur = detect_currency(t, fund)
-                rate = get_eur_usd_rate()
+                rates = get_fx_rates()
                 last_px = data["Close"].iloc[-1]
-                px_eur = to_eur(last_px, cur, rate)
+                px_eur = to_eur(last_px, cur, rates=rates)
+                sig_st = compute_signal_status(data)
+                sent = compute_sentiment(data)
                 results.append({
                     "Ticker": t,
                     "Name": (fund.get("Name") or t)[:28],
                     "Sektor": (fund.get("Sektor") or "—")[:16],
                     "Kurs €": round(px_eur, 2) if px_eur is not None else "—",
+                    "Status": sig_st["label"],
+                    "Seit Signal %": sig_st["perf_pct"] if sig_st["perf_pct"] is not None else "—",
+                    "Sentiment": sent["score"],
                     "TA-Signal": signal,
-                    "Golden Cross": "✅" if detect_golden_cross(data) else "—",
                     "Piotroski": f"{p_score}/{p_max}" if p_score is not None else "—",
                     "Composite": composite,
                     "Rel. Bew.": val_sc,
                     "RSI": round(data["RSI"].iloc[-1], 1) if not pd.isna(data["RSI"].iloc[-1]) else "—",
                     "KGV": round(fund["KGV (trailing)"], 1) if fund.get("KGV (trailing)") else "—",
                     "Vol %": vol if vol is not None else "—",
-                    "Max DD %": max_dd if max_dd is not None else "—",
                 })
             except Exception:
                 pass
@@ -888,11 +1417,13 @@ elif mode == "🔍 Scanner":
 # ===========================================================================
 elif mode == "📋 Vergleichs-Matrix":
     st.title("📋 Vergleichs-Matrix")
-    raw = st.text_input("Ticker oder Namen (kommagetrennt)", "Apple, Microsoft, SAP, NVIDIA, ASML")
+    raw = st.text_input("Ticker oder Namen (kommagetrennt)", "Apple, Microsoft, SAP, NVIDIA, ASML, TSMC")
     tickers = [resolve_ticker(t.strip()) for t in raw.split(",") if t.strip()]
     if tickers and st.button("Vergleichen"):
         rows = []
-        for t in tickers:
+        rates = get_fx_rates()
+        progress = st.progress(0)
+        for i, t in enumerate(tickers):
             f = load_fundamentals(t)
             data = load_price_history(t, "2y")
             p_score, _, p_max = compute_piotroski_score(t)
@@ -904,22 +1435,33 @@ elif mode == "📋 Vergleichs-Matrix":
             signal = compute_ta_signal(data) if not data.empty else "—"
             composite = compute_composite_score(p_score, p_max, l_score, val_sc, signal, r6)
             vol, max_dd = compute_risk_metrics(data) if not data.empty else (None, None)
+            sig_st = compute_signal_status(data) if not data.empty else {"label": "—", "perf_pct": None}
+            sent = compute_sentiment(data) if not data.empty else {"score": "—"}
+            cur = detect_currency(t, f)
+            px = f.get("Kurs")
+            if px is None and not data.empty:
+                px = float(data["Close"].iloc[-1])
+            px_eur = to_eur(px, cur, rates=rates) if px is not None else None
             rows.append({
                 "Ticker": t,
                 "Name": (f.get("Name") or t)[:22],
                 "Sektor": (f.get("Sektor") or "—")[:14],
-                "Kurs": f.get("Kurs"),
-                "KGV": f.get("KGV (trailing)"),
-                "KBV": f.get("KBV"),
-                "ROE": f.get("ROE"),
+                "Kurs €": round(px_eur, 2) if px_eur is not None else "—",
+                "Status": sig_st.get("label", "—"),
+                "Seit Signal %": sig_st.get("perf_pct") if sig_st.get("perf_pct") is not None else "—",
+                "Sentiment": sent.get("score", "—"),
+                "KGV": round(f["KGV (trailing)"], 1) if f.get("KGV (trailing)") else "—",
+                "ROE": f"{f['ROE']*100:.1f}%" if isinstance(f.get("ROE"), (int, float)) else "—",
                 "TA-Signal": signal,
                 "Piotroski": f"{p_score}/{p_max}" if p_score is not None else "—",
                 "Composite": composite,
-                "Vol %": vol,
-                "Max DD %": max_dd,
+                "Vol %": vol if vol is not None else "—",
+                "Max DD %": max_dd if max_dd is not None else "—",
             })
+            progress.progress((i + 1) / len(tickers))
         st.dataframe(pd.DataFrame(rows).sort_values("Composite", ascending=False),
                      use_container_width=True, hide_index=True)
+        st.caption("Sortiert nach Composite-Score. Status = LONG/FLAT/SHORT aus Trendlogik.")
 
 # ===========================================================================
 # 4. Portfolio
@@ -949,14 +1491,14 @@ elif mode == "💼 Portfolio":
         rows = []
         total_invested = 0.0
         total_value = 0.0
+        rates = get_fx_rates()
         for p in portfolio:
             data = load_price_history(p["ticker"], "5d")
             current_raw = data["Close"].iloc[-1] if not data.empty else p["buy_price"]
             fund_p = load_fundamentals(p["ticker"])
             cur = detect_currency(p["ticker"], fund_p)
-            rate = get_eur_usd_rate()
-            current = to_eur(current_raw, cur, rate) or current_raw
-            buy_eur = to_eur(p["buy_price"], cur, rate) or p["buy_price"]
+            current = to_eur(current_raw, cur, rates=rates) or current_raw
+            buy_eur = to_eur(p["buy_price"], cur, rates=rates) or p["buy_price"]
             value = current * p["shares"]
             invested = buy_eur * p["shares"]
             pnl = value - invested
@@ -976,7 +1518,22 @@ elif mode == "💼 Portfolio":
         if total_invested > 0:
             st.metric("Gesamt-Performance", f"{total_value - total_invested:+.2f} €",
                       f"{(total_value / total_invested - 1) * 100:+.1f} %")
-        if st.button("Portfolio leeren"):
+
+        del_idx = st.number_input(
+            "Position löschen (Index ab 0)",
+            min_value=0,
+            max_value=max(0, len(portfolio) - 1),
+            value=0,
+            step=1,
+        )
+        cdel1, cdel2 = st.columns(2)
+        if cdel1.button("Diese Position löschen"):
+            if 0 <= int(del_idx) < len(portfolio):
+                removed = portfolio.pop(int(del_idx))
+                save_json(PORTFOLIO_FILE, portfolio)
+                st.success(f"{removed.get('ticker', '?')} entfernt")
+                st.rerun()
+        if cdel2.button("Portfolio komplett leeren"):
             save_json(PORTFOLIO_FILE, [])
             st.rerun()
 
@@ -984,44 +1541,194 @@ elif mode == "💼 Portfolio":
 # 5. Backtesting
 # ===========================================================================
 elif mode == "📉 Backtesting":
-    st.title("📉 Backtesting – Signale historisch prüfen")
-    user_input = st.text_input("Aktie (Name oder Ticker)", value="Apple")
+    st.title("📉 Backtesting – vertiefte Signal-Analyse")
+    st.caption("Prüft, ob und wie stark historische Signale bei dieser Aktie mit späteren Kursgewinnen korreliert haben.")
+
+    c_in1, c_in2 = st.columns([2, 1])
+    with c_in1:
+        user_input = st.text_input("Aktie (Name oder Ticker)", value="Apple")
+    with c_in2:
+        period = st.selectbox("Historie", ["5y", "10y", "max"], index=0)
+
+    signal_map = {
+        "Golden Cross (SMA50 > SMA200)": "golden",
+        "Death Cross (SMA50 < SMA200)": "death",
+        "RSI Überverkauft-Bounce (<30 → >30)": "rsi_oversold",
+        "RSI Überkauft-Exit (>70 → <70)": "rsi_overbought",
+        "MACD-Bullish-Cross": "macd",
+        "Kombiniertes TA-Kaufsignal": "ta",
+    }
+    signal_choice = st.selectbox("Signal-Typ", list(signal_map.keys()))
+    hold_days = st.slider("Feste Haltedauer für Equity-Kurve (Handelstage)", 10, 126, 63, 1)
+
     ticker = resolve_ticker(user_input) if user_input else ""
-    period = st.selectbox("Historie", ["5y", "10y", "max"], index=0)
-    signal_choice = st.radio("Welches Signal testen?", ["Golden Cross", "Kombiniertes TA-Kaufsignal"], horizontal=True)
+    if ticker and ticker.upper() != user_input.upper().strip():
+        st.caption(f"→ Interpretiert als: **{ticker}**")
+
     if ticker and st.button("Backtest starten", type="primary"):
         data = load_price_history(ticker, period)
         if data.empty:
             st.error("Keine Daten.")
         else:
-            sig_type = "golden" if signal_choice == "Golden Cross" else "ta"
-            result = backtest_signals(data, signal_type=sig_type)
+            sig_type = signal_map[signal_choice]
+            result = backtest_signals(data, signal_type=sig_type, hold_days=hold_days)
+
             if result["count"] == 0:
-                st.warning("In diesem Zeitraum wurden keine Signale gefunden.")
+                st.warning("In diesem Zeitraum wurden keine Signale dieses Typs gefunden. Anderen Signal-Typ oder längere Historie wählen.")
             else:
                 summary = result["summary"]
-                st.subheader(f"Zusammenfassung – {result['count']} Signale gefunden ({signal_choice})")
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Ø Rendite 1 Monat", f"{summary.get('Ø 21T', '—')} %",
-                          f"Trefferquote {summary.get('Trefferquote 21T', '—')} %")
-                c2.metric("Ø Rendite 3 Monate", f"{summary.get('Ø 63T', '—')} %",
-                          f"Trefferquote {summary.get('Trefferquote 63T', '—')} %")
-                c3.metric("Ø Rendite 6 Monate", f"{summary.get('Ø 126T', '—')} %",
-                          f"Trefferquote {summary.get('Trefferquote 126T', '—')} %")
-                st.caption(f"Median 3M: {summary.get('Median 63T', '—')} %  |  Median 6M: {summary.get('Median 126T', '—')} %")
+                st.subheader(f"📊 {result['count']} Signale · {signal_choice}")
+
+                # Haupt-Metriken
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Ø 1 Monat", f"{summary.get('Ø 21T', '—')} %",
+                          f"TQ {summary.get('Trefferquote 21T', '—')} %")
+                m2.metric("Ø 3 Monate", f"{summary.get('Ø 63T', '—')} %",
+                          f"TQ {summary.get('Trefferquote 63T', '—')} %")
+                m3.metric("Ø 6 Monate", f"{summary.get('Ø 126T', '—')} %",
+                          f"TQ {summary.get('Trefferquote 126T', '—')} %")
+                m4.metric("Profit Factor (3M)", f"{summary.get('PF 63T', '—')}",
+                          f"Max Verlustserie: {summary.get('max_consec_loss', '—')}")
+
+                # Detail-Stats
+                with st.expander("📈 Detail-Statistik", expanded=True):
+                    d1, d2, d3 = st.columns(3)
+                    with d1:
+                        st.write("**1 Monat (21T)**")
+                        st.write(f"Median: {summary.get('Median 21T', '—')} %")
+                        st.write(f"Best: {summary.get('Best 21T', '—')} %")
+                        st.write(f"Worst: {summary.get('Worst 21T', '—')} %")
+                        st.write(f"Ø Win: {summary.get('Ø Win 21T', '—')} %")
+                        st.write(f"Ø Loss: {summary.get('Ø Loss 21T', '—')} %")
+                    with d2:
+                        st.write("**3 Monate (63T)**")
+                        st.write(f"Median: {summary.get('Median 63T', '—')} %")
+                        st.write(f"Best: {summary.get('Best 63T', '—')} %")
+                        st.write(f"Worst: {summary.get('Worst 63T', '—')} %")
+                        st.write(f"Ø Win: {summary.get('Ø Win 63T', '—')} %")
+                        st.write(f"Ø Loss: {summary.get('Ø Loss 63T', '—')} %")
+                    with d3:
+                        st.write("**6 Monate (126T)**")
+                        st.write(f"Median: {summary.get('Median 126T', '—')} %")
+                        st.write(f"Best: {summary.get('Best 126T', '—')} %")
+                        st.write(f"Worst: {summary.get('Worst 126T', '—')} %")
+                        st.write(f"Ø Win: {summary.get('Ø Win 126T', '—')} %")
+                        st.write(f"Ø Loss: {summary.get('Ø Loss 126T', '—')} %")
+
+                # Equity-Kurve
+                if result.get("equity"):
+                    st.subheader(f"📉 Equity-Kurve (Haltedauer {hold_days} Tage)")
+                    eq_df = pd.DataFrame(result["equity"])
+                    fig_eq = go.Figure()
+                    fig_eq.add_trace(go.Scatter(
+                        x=eq_df["Signal #"], y=eq_df["Kumuliert %"],
+                        mode="lines+markers", name="Kumulierte Rendite %",
+                        line=dict(color="#26a69a", width=2.5),
+                        marker=dict(size=7),
+                        fill="tozeroy",
+                        fillcolor="rgba(38,166,154,0.15)",
+                    ))
+                    fig_eq.add_hline(y=0, line_dash="dot", line_color="rgba(255,255,255,0.35)")
+                    fig_eq.update_layout(
+                        **CHART_LAYOUT,
+                        height=360,
+                        xaxis_title="Signal-Nummer",
+                        yaxis_title="Kumuliert %",
+                    )
+                    st.plotly_chart(fig_eq, use_container_width=True, config=PLOTLY_CONFIG)
+                    final = summary.get("equity_final")
+                    if final is not None:
+                        if final > 0:
+                            st.success(f"Kumuliert über alle Signale (je {hold_days}T halten): **{final:+.1f} %**")
+                        else:
+                            st.warning(f"Kumuliert über alle Signale (je {hold_days}T halten): **{final:+.1f} %**")
+
+                # Chart mit Signal-Markern
+                st.subheader("📍 Signale im Kursverlauf")
+                fig_sig = go.Figure()
+                fig_sig.add_trace(go.Candlestick(
+                    x=data.index, open=data["Open"], high=data["High"],
+                    low=data["Low"], close=data["Close"], name="Kurs",
+                    increasing_line_color="#26a69a", increasing_fillcolor="#26a69a",
+                    decreasing_line_color="#ef5350", decreasing_fillcolor="#ef5350",
+                ))
+                if "SMA50" in data.columns:
+                    fig_sig.add_trace(go.Scatter(
+                        x=data.index, y=data["SMA50"], name="SMA50",
+                        line=dict(color="#ffb74d", width=1.8),
+                    ))
+                if "SMA200" in data.columns:
+                    fig_sig.add_trace(go.Scatter(
+                        x=data.index, y=data["SMA200"], name="SMA200",
+                        line=dict(color="#42a5f5", width=1.8),
+                    ))
+                sig_dates = result.get("signal_dates") or []
+                if sig_dates:
+                    sig_prices = [float(data.loc[d, "Close"]) for d in sig_dates if d in data.index]
+                    sig_x = [d for d in sig_dates if d in data.index]
+                    is_sell = sig_type in ("death", "rsi_overbought")
+                    fig_sig.add_trace(go.Scatter(
+                        x=sig_x, y=sig_prices, mode="markers",
+                        name="Sell-Signal" if is_sell else "Buy-Signal",
+                        marker=dict(
+                            symbol="triangle-down" if is_sell else "triangle-up",
+                            size=14,
+                            color="#ef5350" if is_sell else "#26a69a",
+                            line=dict(width=1, color="white"),
+                        ),
+                    ))
+                fig_sig.update_layout(
+                    **CHART_LAYOUT,
+                    height=480,
+                    xaxis_rangeslider_visible=False,
+                    yaxis_title="Kurs",
+                )
+                st.plotly_chart(fig_sig, use_container_width=True, config=PLOTLY_CONFIG)
+                st.caption("📱 Zwei Finger = zoomen · Ein Finger = schieben")
+
+                # Tabelle
                 st.subheader("Einzelne Signale")
                 details_df = pd.DataFrame(result["details"])
                 st.dataframe(details_df, use_container_width=True, hide_index=True)
-                avg_6m = summary.get("Ø 126T")
-                hit_6m = summary.get("Trefferquote 126T")
-                if avg_6m is not None and hit_6m is not None:
-                    if avg_6m > 8 and hit_6m > 55:
-                        st.success("Historisch hat dieses Signal bei dieser Aktie relativ gut funktioniert (positive Ø-Rendite + anständige Trefferquote).")
-                    elif avg_6m > 0 and hit_6m > 50:
-                        st.info("Leicht positiver historischer Rand. Signal war brauchbar, aber nicht überragend.")
+
+                # Bewertung
+                avg_3m = summary.get("Ø 63T")
+                hit_3m = summary.get("Trefferquote 63T")
+                pf = summary.get("PF 63T")
+                if avg_3m is not None and hit_3m is not None:
+                    score = 0
+                    if avg_3m > 5:
+                        score += 2
+                    elif avg_3m > 0:
+                        score += 1
+                    if hit_3m >= 55:
+                        score += 2
+                    elif hit_3m >= 50:
+                        score += 1
+                    if pf is not None and pf >= 1.5:
+                        score += 2
+                    elif pf is not None and pf >= 1.0:
+                        score += 1
+
+                    if score >= 5:
+                        st.success(
+                            f"**Starkes historisches Signal** (Score {score}/6): "
+                            f"Positive Ø-Rendite, solide Trefferquote"
+                            + (f", Profit Factor {pf}" if pf else "")
+                            + ". Trotzdem keine Zukunftsgarantie."
+                        )
+                    elif score >= 3:
+                        st.info(
+                            f"**Brauchbares Signal** (Score {score}/6): "
+                            "Historisch leicht positiver Rand – als Baustein ok, nicht allein handeln."
+                        )
                     else:
-                        st.warning("Historisch eher schwach oder gemischt. Vorsicht bei alleinigem Vertrauen auf dieses Signal.")
+                        st.warning(
+                            f"**Schwaches / gemischtes Signal** (Score {score}/6): "
+                            "Historisch wenig Vorteil. Vorsicht bei alleinigem Vertrauen."
+                        )
+
                 st.info(
-                    "Wichtiger Hinweis: Vergangene Performance ist keine Garantie für die Zukunft. "
-                    "Das Backtesting zeigt nur, wie stark das Signal bei dieser Aktie historisch mit späteren Kursbewegungen korreliert hat."
+                    "Hinweis: Backtests nutzen feste Zeithorizonte (keine Stop-Loss/Take-Profit-Simulation). "
+                    "Vergangene Korrelation ≠ zukünftige Performance. Immer mit Risiko- und Qualitätsfiltern kombinieren."
                 )
