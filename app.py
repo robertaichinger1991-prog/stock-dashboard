@@ -33,59 +33,39 @@ PLOTLY_CONFIG = {
     "displayModeBar": True,
     "displaylogo": False,
     "responsive": True,
-    "doubleClick": "reset",
-    # Zoom/Pan explizit behalten – wichtig für Touch
-    "modeBarButtonsToRemove": ["lasso2d", "select2d"],
-    "modeBarButtonsToAdd": ["drawline", "eraseshape"],
-    "toImageButtonOptions": {"format": "png", "filename": "chart", "scale": 2},
-}
-
-# Extra-Config für große/Vollbild-Ansicht (gleiche Basis)
-PLOTLY_CONFIG_FULL = {
-    **PLOTLY_CONFIG,
-    "displayModeBar": True,
+    "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"],
+    "toImageButtonOptions": {"format": "png", "filename": "chart"},
 }
 
 CHART_LAYOUT = dict(
     template="plotly_dark",
     paper_bgcolor="#0e1117",
     plot_bgcolor="#0e1117",
-    font=dict(family="Inter, system-ui, sans-serif", size=14, color="#e8e8e8"),
-    margin=dict(l=40, r=56, t=56, b=40),
+    font=dict(family="Inter, system-ui, sans-serif", size=13, color="#e0e0e0"),
+    margin=dict(l=48, r=24, t=48, b=40),
     legend=dict(
         orientation="h",
         yanchor="bottom",
         y=1.02,
         xanchor="left",
         x=0,
-        bgcolor="rgba(14,17,23,0.85)",
+        bgcolor="rgba(0,0,0,0)",
         font=dict(size=12),
-        itemsizing="constant",
     ),
     hovermode="x unified",
-    # pan = mit Finger schieben; Zoom über Modebar-Buttons oder Range-Slider
     dragmode="pan",
-    spikedistance=50,
     xaxis=dict(
         showgrid=True,
-        gridcolor="rgba(255,255,255,0.07)",
+        gridcolor="rgba(255,255,255,0.08)",
         zeroline=False,
-        showspikes=True,
-        spikemode="across",
-        spikesnap="cursor",
-        spikecolor="rgba(255,255,255,0.35)",
-        spikethickness=1,
-        fixedrange=False,
+        rangeslider=dict(visible=False),
+        fixedrange=False,  # Zoom/Pan erlauben
     ),
     yaxis=dict(
         showgrid=True,
-        gridcolor="rgba(255,255,255,0.07)",
+        gridcolor="rgba(255,255,255,0.08)",
         zeroline=False,
         side="right",
-        showspikes=True,
-        spikemode="across",
-        spikecolor="rgba(255,255,255,0.25)",
-        spikethickness=1,
         fixedrange=False,
     ),
 )
@@ -1155,26 +1135,12 @@ if mode == "📊 Einzelanalyse":
             sc3.metric("Währung (Original)", currency)
 
             chart_title = f"{ticker} – Kurs in € + SMA50/200"
-            if currency != "EUR":
-                chart_title += f"  · FX-Umrechnung aktiv"
-
-            # Chart-Steuerung
-            st.markdown("#### 📈 Chart")
-            cc1, cc2, cc3, cc4 = st.columns(4)
-            with cc1:
-                chart_big = st.toggle("Vollbild-Chart", value=False, help="Größere Ansicht zum genauen Analysieren")
-            with cc2:
-                show_slider = st.toggle("Zeitraum-Slider", value=True, help="Unten am Chart zoomen/verschieben – ideal am Handy")
-            with cc3:
-                show_buy_marks = st.toggle("Kaufsignale", value=True)
-            with cc4:
-                show_gc_marks = st.toggle("Golden Cross", value=True)
-
-            chart_height = 980 if chart_big else 720
+            if currency == "USD":
+                chart_title += f"  (EUR/USD {eur_usd:.4f})"
 
             fig = make_subplots(
-                rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.04,
-                row_heights=[0.58, 0.18, 0.24],
+                rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+                row_heights=[0.55, 0.2, 0.25],
                 subplot_titles=(chart_title, "RSI (14)", "MACD"),
             )
             fig.add_trace(go.Candlestick(
@@ -1185,56 +1151,12 @@ if mode == "📊 Einzelanalyse":
             ), row=1, col=1)
             fig.add_trace(go.Scatter(
                 x=plot.index, y=plot["SMA50"], name="SMA50",
-                line=dict(color="#ffb74d", width=2),
+                line=dict(color="#ffb74d", width=1.8),
             ), row=1, col=1)
             fig.add_trace(go.Scatter(
                 x=plot.index, y=plot["SMA200"], name="SMA200",
-                line=dict(color="#42a5f5", width=2),
+                line=dict(color="#42a5f5", width=1.8),
             ), row=1, col=1)
-
-            # Kaufsignale im Chart markieren
-            if show_buy_marks:
-                buy_dates = _find_signal_dates(data, "ta")
-                if buy_dates:
-                    bx, by = [], []
-                    for d in buy_dates:
-                        if d in plot.index:
-                            bx.append(d)
-                            by.append(float(plot.loc[d, "Close"]))
-                    if bx:
-                        fig.add_trace(go.Scatter(
-                            x=bx, y=by, mode="markers",
-                            name="Kaufsignal",
-                            marker=dict(
-                                symbol="triangle-up",
-                                size=13,
-                                color="#00e676",
-                                line=dict(width=1.5, color="white"),
-                            ),
-                            hovertemplate="Kaufsignal<br>%{x|%d.%m.%Y}<br>%{y:.2f} €<extra></extra>",
-                        ), row=1, col=1)
-
-            if show_gc_marks:
-                gc_dates = _find_signal_dates(data, "golden")
-                if gc_dates:
-                    gx, gy = [], []
-                    for d in gc_dates:
-                        if d in plot.index:
-                            gx.append(d)
-                            gy.append(float(plot.loc[d, "Close"]))
-                    if gx:
-                        fig.add_trace(go.Scatter(
-                            x=gx, y=gy, mode="markers",
-                            name="Golden Cross",
-                            marker=dict(
-                                symbol="star",
-                                size=14,
-                                color="#ffd600",
-                                line=dict(width=1, color="#333"),
-                            ),
-                            hovertemplate="Golden Cross<br>%{x|%d.%m.%Y}<br>%{y:.2f} €<extra></extra>",
-                        ), row=1, col=1)
-
             for key, color, label in [
                 ("Analysten-Kursziel (niedrig)", "#2ca02c", "Min"),
                 ("Analysten-Kursziel (mittel)", "#1f77b4", "Normal"),
@@ -1243,81 +1165,46 @@ if mode == "📊 Einzelanalyse":
                 val = fundamentals.get(key)
                 if val:
                     val_eur = float(val) * fx
-                    fig.add_hline(
-                        y=val_eur, line_dash="dash", line_color=color,
-                        annotation_text=f"{label} {val_eur:.1f} €",
-                        annotation_font_size=11,
-                        row=1, col=1,
-                    )
+                    fig.add_hline(y=val_eur, line_dash="dash", line_color=color,
+                                  annotation_text=f"{label} {val_eur:.1f} €", row=1, col=1)
             fib = compute_fib_entry_zone(data)
             if fib:
-                fig.add_hrect(
-                    y0=fib[0] * fx, y1=fib[1] * fx,
-                    fillcolor="rgba(38,166,154,0.12)", line_width=0,
-                    annotation_text="Fib-Zone", annotation_position="top left",
-                    row=1, col=1,
-                )
-
+                fig.add_hrect(y0=fib[0] * fx, y1=fib[1] * fx, fillcolor="green", opacity=0.15,
+                              annotation_text="Fib-Einstiegszone", row=1, col=1)
             fig.add_trace(go.Scatter(
                 x=data.index, y=data["RSI"], name="RSI",
-                line=dict(color="#ce93d8", width=1.8),
+                line=dict(color="#ce93d8", width=1.6),
             ), row=2, col=1)
             fig.add_hline(y=70, line_dash="dot", line_color="rgba(239,83,80,0.7)", row=2, col=1)
             fig.add_hline(y=30, line_dash="dot", line_color="rgba(38,166,154,0.7)", row=2, col=1)
             fig.add_hline(y=50, line_dash="dot", line_color="rgba(255,255,255,0.15)", row=2, col=1)
-
             fig.add_trace(go.Scatter(
                 x=data.index, y=data["MACD"], name="MACD",
-                line=dict(color="#64b5f6", width=1.6),
+                line=dict(color="#64b5f6", width=1.5),
             ), row=3, col=1)
             fig.add_trace(go.Scatter(
                 x=data.index, y=data["MACD_signal"], name="Signal",
-                line=dict(color="#ffb74d", width=1.6),
+                line=dict(color="#ffb74d", width=1.5),
             ), row=3, col=1)
             colors = ["#26a69a" if v >= 0 else "#ef5350" for v in data["MACD_hist"].fillna(0)]
             fig.add_trace(go.Bar(
                 x=data.index, y=data["MACD_hist"], name="Hist",
-                marker_color=colors, opacity=0.75,
+                marker_color=colors, opacity=0.7,
             ), row=3, col=1)
-
             fig.update_layout(
                 **CHART_LAYOUT,
-                height=chart_height,
+                height=720,
                 xaxis_rangeslider_visible=False,
                 xaxis_title=None,
                 yaxis_title="Kurs €",
-                yaxis2=dict(
-                    showgrid=True, gridcolor="rgba(255,255,255,0.06)",
-                    fixedrange=False, title="RSI", range=[0, 100],
-                ),
-                yaxis3=dict(
-                    showgrid=True, gridcolor="rgba(255,255,255,0.06)",
-                    fixedrange=False, title="MACD",
-                ),
+                yaxis2=dict(showgrid=True, gridcolor="rgba(255,255,255,0.06)", fixedrange=False, title="RSI"),
+                yaxis3=dict(showgrid=True, gridcolor="rgba(255,255,255,0.06)", fixedrange=False, title="MACD"),
             )
-            # Unterster x-Achse: Range-Slider für mobiles Zoomen
-            fig.update_xaxes(
-                fixedrange=False,
-                showgrid=True,
-                gridcolor="rgba(255,255,255,0.08)",
-                rangeslider=dict(visible=show_slider, thickness=0.06),
-                row=3, col=1,
-            )
-            fig.update_xaxes(fixedrange=False, showgrid=True, gridcolor="rgba(255,255,255,0.08)", row=1, col=1)
-            fig.update_xaxes(fixedrange=False, showgrid=True, gridcolor="rgba(255,255,255,0.08)", row=2, col=1)
+            # Subplot-Achsen Zoom erlauben
+            fig.update_xaxes(fixedrange=False, showgrid=True, gridcolor="rgba(255,255,255,0.08)")
             fig.update_yaxes(fixedrange=False)
-
-            st.plotly_chart(
-                fig,
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
-                key=f"chart_{ticker}_{int(chart_big)}_{int(show_slider)}",
-            )
-            st.caption(
-                "📱 **Handy:** Zeitraum-Slider unten ziehen · Modebar (🔍 + / −) zum Zoomen · "
-                "mit einem Finger verschieben · **Vollbild-Chart** für große Ansicht · "
-                "🟢 Dreieck = Kaufsignal · ⭐ = Golden Cross"
-            )
+            st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+            st.caption("📱 Handy: mit zwei Fingern zoomen, mit einem Finger schieben · Desktop: Mausrad zoomen, ziehen zum Verschieben")
 
             # ---- Zielpfad ----
             zp = compute_zielpfad(data, fundamentals, fx=fx)
