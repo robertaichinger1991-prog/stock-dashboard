@@ -219,7 +219,7 @@ COMMON_NAMES = {
     "TESLA": "TSLA", "NETFLIX": "NFLX", "SAP": "SAP.DE", "SIEMENS": "SIE.DE",
     "ALLIANZ": "ALV.DE", "DEUTSCHE TELEKOM": "DTE.DE", "TELEKOM": "DTE.DE",
     "BASF": "BAS.DE", "BMW": "BMW.DE", "MERCEDES": "MBG.DE", "MERCEDES-BENZ": "MBG.DE",
-    "VOLKSWAGEN": "VOW3.DE", "VW": "VOW3.DE", "MUNICH RE": "MUV2.DE", "AIRBUS": "AIR.DE",
+    "VOLKSWAGEN": "VOW3.DE", "VW": "VOW3.DE", "MUNICH RE": "MUV2.DE",
     "AMD": "AMD", "SALESFORCE": "CRM", "BERKSHIRE": "BRK-B", "JPMORGAN": "JPM",
     "VISA": "V", "JOHNSON & JOHNSON": "JNJ", "WALMART": "WMT", "EXXON": "XOM",
     "COCA-COLA": "KO", "COCA COLA": "KO", "DISNEY": "DIS", "NIKE": "NKE",
@@ -288,6 +288,12 @@ TICKER_FALLBACKS = {
     "0700.HK": ["0700.HK", "TCEHY"],
     "9988.HK": ["9988.HK", "BABA"],
     "3690.HK": ["3690.HK", "MPNGY"],
+    "GC=F": ["GC=F", "GLD", "IAU"],
+    "SI=F": ["SI=F", "SLV"],
+    "PL=F": ["PL=F"],
+    "PA=F": ["PA=F"],
+    "BTC-USD": ["BTC-USD", "BTC-EUR"],
+    "ETH-USD": ["ETH-USD", "ETH-EUR"],
 }
 
 
@@ -375,6 +381,54 @@ def compute_fib_entry_zone(data: pd.DataFrame, lookback_days: int = 126):
     fib_50 = swing_high - 0.5 * diff
     fib_618 = swing_high - 0.618 * diff
     return min(fib_50, fib_618), max(fib_50, fib_618)
+
+
+def compute_entry_zones(data: pd.DataFrame, fx: float = 1.0, lookback_days: int = 252):
+    """Ermittelt drei technische Kauf-Einstiegszonen aus Fibonacci-Retracements.
+
+    Die Zonen sind:
+    1. flacher Rücksetzer: 23,6–38,2 %
+    2. normaler Rücksetzer: 38,2–50,0 %
+    3. tiefer Rücksetzer: 50,0–61,8 %
+
+    Die Berechnung funktioniert identisch für Aktien, ETFs, Rohstoffe und Krypto.
+    Alle Preise werden in der im Chart verwendeten EUR-Währung zurückgegeben.
+    """
+    if data.empty or not {"High", "Low", "Close"}.issubset(data.columns):
+        return []
+
+    recent = data.tail(lookback_days).dropna(subset=["High", "Low", "Close"]).copy()
+    recent = recent.replace([np.inf, -np.inf], np.nan).dropna(subset=["High", "Low", "Close"])
+    if len(recent) < 30:
+        return []
+
+    swing_high = float(recent["High"].max())
+    swing_low = float(recent["Low"].min())
+    diff = swing_high - swing_low
+    if diff <= 0:
+        return []
+
+    # Retracement-Level vom Swing-High nach unten.
+    fib236 = swing_high - 0.236 * diff
+    fib382 = swing_high - 0.382 * diff
+    fib500 = swing_high - 0.500 * diff
+    fib618 = swing_high - 0.618 * diff
+
+    zones = [
+        {"name": "EINSTIEG 1", "typ": "Flacher Rücksetzer", "low": fib382, "high": fib236},
+        {"name": "EINSTIEG 2", "typ": "Normaler Rücksetzer", "low": fib500, "high": fib382},
+        {"name": "EINSTIEG 3", "typ": "Tiefer Rücksetzer", "low": fib618, "high": fib500},
+    ]
+
+    last = float(recent["Close"].iloc[-1])
+    for z in zones:
+        z["low"] *= fx
+        z["high"] *= fx
+        z["mitte"] = (z["low"] + z["high"]) / 2
+        z["distanz_pct"] = (z["mitte"] / (last * fx) - 1) * 100
+        z["unter_kurs"] = z["high"] <= last * fx
+
+    return zones
 
 
 def compute_risk_metrics(data: pd.DataFrame):
@@ -1322,14 +1376,28 @@ if mode == "📊 Einzelanalyse":
                 chart_title += f" ({currency}→€)"
 
             st.markdown("#### 📈 Chart")
-            # Steuerung – checkbox statt toggle (bessere Kompatibilität)
+            # Mobile-freundliche Steuerung: große Schnell-Zeiträume statt fummeliger Navigation
             cc1, cc2, cc3 = st.columns(3)
             with cc1:
                 chart_big = st.checkbox("Vollbild", value=False, help="Sehr hohe Chart-Ansicht")
             with cc2:
-                mobile_simple = st.checkbox("Einfach (Handy)", value=False, help="Nur Kurs + SMA, ohne RSI/MACD")
+                mobile_simple = st.checkbox(
+                    "Einfach (Handy)", value=True,
+                    help="Kompakter Kurs-Chart; RSI/MACD ausblenden"
+                )
             with cc3:
-                show_slider = st.checkbox("Zeit-Slider", value=True, help="Zum Zoomen am Handy unten ziehen")
+                show_slider = st.checkbox(
+                    "Zeit-Slider", value=False,
+                    help="Optional: feine Auswahl des Zeitfensters per Slider"
+                )
+
+            chart_window = st.radio(
+                "Schnell-Zoom",
+                ["1M", "3M", "6M", "1J", "2J", "Max"],
+                index=2,
+                horizontal=True,
+                help="Tippen statt mit zwei Fingern lange zu zoomen.",
+            )
 
             mc1, mc2 = st.columns(2)
             with mc1:
@@ -1420,9 +1488,20 @@ if mode == "📊 Einzelanalyse":
                     if val:
                         fig.add_hline(y=float(val) * fx, line_dash="dash", line_color=color,
                                       annotation_text=f"{label} {float(val)*fx:.1f} €")
-                fib = compute_fib_entry_zone(data)
-                if fib:
-                    fig.add_hrect(y0=fib[0]*fx, y1=fib[1]*fx, fillcolor="rgba(38,166,154,0.12)", line_width=0)
+                entry_zones = compute_entry_zones(data, fx=fx)
+                zone_fills = [
+                    "rgba(38,166,154,0.10)",
+                    "rgba(255,183,77,0.10)",
+                    "rgba(66,165,245,0.10)",
+                ]
+                for z, fill in zip(entry_zones, zone_fills):
+                    fig.add_hrect(
+                        y0=z["low"], y1=z["high"],
+                        fillcolor=fill, line_width=0,
+                        annotation_text=f"{z['name']} {z['low']:.2f}–{z['high']:.2f} €",
+                        annotation_position="top left",
+                        annotation_font_size=10,
+                    )
             else:
                 _add_markers(fig, row=1)
                 for key, color, label in [
@@ -1435,10 +1514,20 @@ if mode == "📊 Einzelanalyse":
                         fig.add_hline(y=float(val)*fx, line_dash="dash", line_color=color,
                                       annotation_text=f"{label} {float(val)*fx:.1f} €",
                                       annotation_font_size=11, row=1, col=1)
-                fib = compute_fib_entry_zone(data)
-                if fib:
-                    fig.add_hrect(y0=fib[0]*fx, y1=fib[1]*fx, fillcolor="rgba(38,166,154,0.12)",
-                                  line_width=0, row=1, col=1)
+                entry_zones = compute_entry_zones(data, fx=fx)
+                zone_fills = [
+                    "rgba(38,166,154,0.10)",
+                    "rgba(255,183,77,0.10)",
+                    "rgba(66,165,245,0.10)",
+                ]
+                for z, fill in zip(entry_zones, zone_fills):
+                    fig.add_hrect(
+                        y0=z["low"], y1=z["high"], fillcolor=fill,
+                        line_width=0, row=1, col=1,
+                        annotation_text=f"{z['name']} {z['low']:.2f}–{z['high']:.2f} €",
+                        annotation_position="top left",
+                        annotation_font_size=10,
+                    )
                 fig.add_trace(go.Scatter(x=data.index, y=data["RSI"], name="RSI",
                                          line=dict(color="#ce93d8", width=1.8)), row=2, col=1)
                 fig.add_hline(y=70, line_dash="dot", line_color="rgba(239,83,80,0.7)", row=2, col=1)
@@ -1457,12 +1546,31 @@ if mode == "📊 Einzelanalyse":
                 height=chart_height,
                 title=dict(text=chart_title if mobile_simple else None, font=dict(size=16)),
                 yaxis_title="Kurs €",
-                dragmode="pan",
             )
-            fig.update_layout(**layout_extra)
+            fig.update_layout(
+                **layout_extra,
+                uirevision=f"{ticker}-{chart_window}-{int(mobile_simple)}",
+            )
 
-            # Range-Slider: dicker für Touch
-            slider_thickness = 0.10 if mobile_simple else 0.07
+            # Schneller Zeit-Zoom. Das ist auf Smartphones deutlich einfacher
+            # als ausschließlich mit dem Range-Slider zu arbeiten.
+            end_date = plot.index[-1]
+            offsets = {
+                "1M": pd.DateOffset(months=1),
+                "3M": pd.DateOffset(months=3),
+                "6M": pd.DateOffset(months=6),
+                "1J": pd.DateOffset(years=1),
+                "2J": pd.DateOffset(years=2),
+            }
+            if chart_window == "Max":
+                chart_start = plot.index[0]
+            else:
+                chart_start = max(plot.index[0], end_date - offsets[chart_window])
+            fig.update_xaxes(range=[chart_start, end_date])
+
+            # Range-Slider: optional, damit der Chart auf kleinen Displays
+            # standardmäßig mehr Platz für die Kursdaten hat.
+            slider_thickness = 0.08 if mobile_simple else 0.07
             if mobile_simple:
                 fig.update_xaxes(
                     rangeslider=dict(visible=show_slider, thickness=slider_thickness),
@@ -1491,10 +1599,29 @@ if mode == "📊 Einzelanalyse":
                 key=f"ch_{ticker}_{int(chart_big)}_{int(mobile_simple)}_{int(show_slider)}",
             )
             st.info(
-                "📱 **Handy-Tipp:** „Einfach (Handy)“ aktivieren · **Zeit-Slider** unten mit dem Finger ziehen "
-                "· oben rechts **+ / −** zum Zoomen · **Vollbild** für große Ansicht · "
-                "🟢 Dreieck = Kaufsignal · ⭐ Golden Cross"
+                "📱 **Handy:** Zeitraum oben antippen (1M/3M/6M/1J/2J) · "
+                "mit einem Finger schieben · mit zwei Fingern zoomen · "
+                "oben rechts +/− für Feintuning · 🟢 Kaufsignal · ⭐ Golden Cross"
             )
+
+            # ---- Drei Kauf-Einstiegszonen ----
+            entry_zones = compute_entry_zones(data, fx=fx)
+            if entry_zones:
+                st.markdown("#### 🎯 3 Kauf-Einstiegszonen bei Rücksetzern")
+                ecols = st.columns(3)
+                for i, z in enumerate(entry_zones):
+                    with ecols[i]:
+                        position = "unter aktuellem Kurs" if z["unter_kurs"] else "über aktuellem Kurs"
+                        st.metric(
+                            z["name"],
+                            f"{z['low']:.2f} – {z['high']:.2f} €",
+                            f"{z['distanz_pct']:+.1f}% · {position}",
+                        )
+                        st.caption(z["typ"])
+                st.caption(
+                    "Technische Rücksetzer-Zonen aus dem 12-Monats-Swing (Fibonacci 23,6–61,8 %). "
+                    "Sie sind Orientierungsbereiche und keine Garantie für eine Trendwende."
+                )
 
             # ---- Zielpfad ----
             zp = compute_zielpfad(data, fundamentals, fx=fx)
@@ -1511,7 +1638,7 @@ if mode == "📊 Einzelanalyse":
                         )
                 with zcols[-1]:
                     st.metric("⚠️ Risiko", f"{zp['risk']:.2f} €", f"{zp['risk_pct']:+.1f}%")
-                st.caption("Ziele aus Fibonacci-Zone + Analysten-Kurszielen abgeleitet. Keine Garantie.")
+                st.caption("Ziele aus Fibonacci-Retracements + Analysten-Kurszielen abgeleitet. Keine Garantie.")
 
             st.subheader("⚠️ Risiko")
             rc1, rc2, rc3, rc4 = st.columns(4)
@@ -1655,8 +1782,10 @@ elif mode == "🔍 Scanner":
         tickers = CAC40_TICKERS
     elif universe == "🪙 Top 10 Krypto":
         tickers = TOP10_CRYPTO
+        st.caption("Krypto: Min. Piotroski auf 0 lassen (keine Bilanz-Scores).")
     elif universe == "🥇 Edelmetalle (Gold/Silber/…)":
         tickers = PRECIOUS_METALS
+        st.caption("Edelmetalle: Min. Piotroski auf 0 lassen.")
     elif universe == "🌏 Asia Tech":
         tickers = ASIA_TECH
     elif universe == "🇯🇵 Japan (Nikkei-Auswahl)":
