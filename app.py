@@ -1,877 +1,2868 @@
+"""
+Stock Screener Pro
+------------------
+Lokales Streamlit-Dashboard zum Finden und Prüfen von Aktien.
+
+Features:
+- Einzelanalyse: Chart (€), LONG/FLAT/SHORT, Sentiment, Zielpfad, Scores
+- Scanner: US/EU/Asien + Qualitätsfilter + Composite-Score
+- Vergleichs-Matrix, Portfolio-Tracking
+- Vertieftes Backtesting (mehrere Signale, Equity-Kurve, Profit Factor)
+- Branchenvergleich, Piotroski, Levermann, Risiko-Kennzahlen
+
+Start:
+    python -m streamlit run app.py
+"""
+
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import plotly.express as px
 import streamlit as st
 import yfinance as yf
+from plotly.subplots import make_subplots
 
-# ==============================================================================
-# SEITEN-KONFIGURATION & DESIGN (Dark-Not-Black Theme)
-# ==============================================================================
-st.set_page_config(
-    page_title="Aktien & Krypto Dashboard (€)",
-    page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title="Stock Screener Pro", layout="wide", page_icon="🌈")
 
-st.markdown(
-    """
-    <style>
-    .stApp {
-        background-color: #0E1117;
-        color: #E6EDF3;
-    }
-    .metric-card {
-        background-color: #161B22;
-        border: 1px solid #30363D;
-        border-radius: 10px;
-        padding: 16px;
-        margin-bottom: 12px;
-    }
-    .badge-green {
-        background-color: rgba(0, 200, 83, 0.15);
-        color: #00E676;
-        border: 1px solid #00C853;
-        padding: 3px 10px;
-        border-radius: 12px;
-        font-weight: 600;
-        font-size: 0.85rem;
-    }
-    .badge-red {
-        background-color: rgba(255, 82, 82, 0.15);
-        color: #FF5252;
-        border: 1px solid #FF5252;
-        padding: 3px 10px;
-        border-radius: 12px;
-        font-weight: 600;
-        font-size: 0.85rem;
-    }
-    .badge-amber {
-        background-color: rgba(255, 179, 0, 0.15);
-        color: #FFD54F;
-        border: 1px solid #FFB300;
-        padding: 3px 10px;
-        border-radius: 12px;
-        font-weight: 600;
-        font-size: 0.85rem;
-    }
-    .info-box {
-        background-color: #161B22;
-        border-left: 4px solid #58A6FF;
-        padding: 12px 16px;
-        border-radius: 6px;
-        margin: 10px 0;
-        font-size: 0.92rem;
-    }
-    .warn-box {
-        background-color: rgba(255, 82, 82, 0.15);
-        border-left: 4px solid #FF5252;
-        padding: 12px 16px;
-        border-radius: 6px;
-        margin: 10px 0;
-        font-weight: 600;
-        color: #FF8A80;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+st.markdown('''
+<style>
+/* Dunkles (nicht-schwarzes) Theme ERZWINGEN */
+.stApp, .stApp > header { background-color: #1e1e2e !important; }
+h1, h2, h3, h4, h5, h6, p, span, label, div { color: #cdd6f4 !important; }
+.stMarkdown, .stText { color: #cdd6f4 !important; }
+div[data-testid="stMetricValue"] { color: #cdd6f4 !important; }
+div[data-testid="stMetricLabel"] { color: #a6adc8 !important; }
+div[data-testid="metric-container"] {
+    background-color: #313244 !important;
+    border-radius: 12px;
+    padding: 15px;
+    box-shadow: 0px 4px 6px rgba(0,0,0,0.2);
+    border: 1px solid #45475a !important;
+}
+/* Dropdowns zwingend dunkel machen */
+div[data-baseweb="select"] > div {
+    background-color: #313244 !important;
+    color: #cdd6f4 !important;
+    border-color: #45475a !important;
+}
+div[data-baseweb="select"] span {
+    color: #cdd6f4 !important;
+}
+ul[data-baseweb="menu"] {
+    background-color: #313244 !important;
+}
+/* Warnungen und Info-Boxen (st.info, st.success, etc) besser lesbar machen */
+div.stAlert, div[data-testid="stAlert"] {
+    background-color: rgba(49, 50, 68, 0.95) !important;
+    color: #cdd6f4 !important;
+    border: 1px solid #45475a !important;
+}
+div.stAlert p, div.stAlert div, div.stAlert span {
+    color: #cdd6f4 !important;
+}
+/* Sidebar (Navigation) zwingend dunkel machen */
+section[data-testid="stSidebar"] {
+    background-color: #181825 !important;
+    border-right: 1px solid #313244 !important;
+}
+section[data-testid="stSidebar"] * {
+    color: #cdd6f4 !important;
+}
+/* Dataframes */
+[data-testid="stDataFrame"] {
+    background-color: #313244 !important;
+}
+</style>
+''', unsafe_allow_html=True)
 
-# ==============================================================================
-# VOREINGESTELLTE AKTIEN-LISTEN & KRYPTO-DATEN
-# ==============================================================================
-INDEX_UNIVERSEN = {
-    "DAX Auswahl (Deutschland)": [
-        "SAP.DE", "SIE.DE", "ALV.DE", "DTE.DE", "ADS.DE",
-        "MBG.DE", "BMW.DE", "BAS.DE", "IFX.DE", "MUV2.DE",
-        "RHM.DE", "DHL.DE", "AIR.DE", "BAYN.DE", "VOW3.DE"
-    ],
-    "US Tech & S&P Top-Werte": [
-        "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL",
-        "META", "TSLA", "AVGO", "AMD", "NFLX",
-        "TTWO", "CRM", "PLTR", "PYPL", "INTC"
-    ],
-    "Europa & Internationale Favoriten": [
-        "ASML.AS", "MC.PA", "NOVO-B.CO", "NESN.SW", "SHEL.L",
-        "1211.HK", "1810.HK", "NKE", "DIS", "BA"
-    ],
+
+# Plotly: mobil-freundlich (Pinch-Zoom, Pan) + klare Darstellung
+# Modebar immer sichtbar; Scroll-Zoom an; Touch über Range-Slider + Buttons
+PLOTLY_CONFIG = {
+    "scrollZoom": True,
+    "displayModeBar": True,
+    "displaylogo": False,
+    "responsive": True,
+    "doubleClick": "reset",
+    "showTips": False,
+    "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"],
+    "toImageButtonOptions": {"format": "png", "filename": "chart", "scale": 2},
 }
 
-KRYPTO_LISTE = [
-    {"name": "Bitcoin", "symbol": "BTC", "ticker": "BTC-EUR", "etf_basis_m": 420.0},
-    {"name": "Ethereum", "symbol": "ETH", "ticker": "ETH-EUR", "etf_basis_m": 115.0},
-    {"name": "Solana", "symbol": "SOL", "ticker": "SOL-EUR", "etf_basis_m": 48.0},
-    {"name": "XRP", "symbol": "XRP", "ticker": "XRP-EUR", "etf_basis_m": 32.0},
-    {"name": "Cardano", "symbol": "ADA", "ticker": "ADA-EUR", "etf_basis_m": 14.0},
-    {"name": "Stellar", "symbol": "XLM", "ticker": "XLM-EUR", "etf_basis_m": 6.5},
-    {"name": "Hedera", "symbol": "HBAR", "ticker": "HBAR-EUR", "etf_basis_m": 5.0},
-]
+CHART_LAYOUT = dict(
+    template="plotly_dark",
+    paper_bgcolor="#1e1e2e",
+    plot_bgcolor="#1e1e2e",
+    font=dict(family="Inter, system-ui, sans-serif", size=14, color="#cdd6f4"),
+    margin=dict(l=40, r=56, t=56, b=40),
+    legend=dict(
+        orientation="h",
+        yanchor="bottom",
+        y=1.02,
+        xanchor="left",
+        x=0,
+        bgcolor="rgba(30,30,46,0.85)",
+        font=dict(size=12, color="#cdd6f4"),
+        itemsizing="constant",
+    ),
+    hovermode="x unified",
+    # pan = mit Finger schieben; Zoom über Modebar-Buttons oder Range-Slider
+    dragmode="pan",
+    spikedistance=50,
+    xaxis=dict(
+        showgrid=True,
+        gridcolor="rgba(255,255,255,0.1)",
+        zeroline=False,
+        showspikes=True,
+        spikemode="across",
+        spikesnap="cursor",
+        spikecolor="rgba(255,255,255,0.35)",
+        spikethickness=1,
+        fixedrange=False,
+    ),
+    yaxis=dict(
+        showgrid=True,
+        gridcolor="rgba(255,255,255,0.1)",
+        zeroline=False,
+        side="right",
+        showspikes=True,
+        spikemode="across",
+        spikecolor="rgba(255,255,255,0.25)",
+        spikethickness=1,
+        fixedrange=False,
+    ),
+)
 
-STANDARD_WATCHLIST = [
-    {"ticker": "NVDA", "name": "NVIDIA Corp.", "stueck": 10.0, "einstieg_eur": 112.50},
-    {"ticker": "ADS.DE", "name": "adidas AG", "stueck": 5.0, "einstieg_eur": 218.00},
-    {"ticker": "TTWO", "name": "Take-Two Interactive", "stueck": 8.0, "einstieg_eur": 158.00},
-    {"ticker": "1810.HK", "name": "Xiaomi Corp.", "stueck": 200.0, "einstieg_eur": 3.10},
-]
-
-# ==============================================================================
-# HILFSFUNKTIONEN & CACHING (Schutz vor API-Limits auf Streamlit Cloud)
-# ==============================================================================
-def bereinige_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Flacht MultiIndex-Spalten von yfinance ab und stellt 1D-Serien sicher."""
-    if df is None or df.empty:
-        return pd.DataFrame()
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    df = df.loc[:, ~df.columns.duplicated()].copy()
-    return df
+# ---------------------------------------------------------------------------
+# Lokale Speicherung
+# ---------------------------------------------------------------------------
+DATA_DIR = "data"
+os.makedirs(DATA_DIR, exist_ok=True)
+PORTFOLIO_FILE = os.path.join(DATA_DIR, "portfolio.json")
+WATCHLIST_FILE = os.path.join(DATA_DIR, "watchlists.json")
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def hole_wechselkurs_zu_eur(waehrung: str) -> float:
-    """Holt den aktuellen Wechselkurs einer Fremdwährung nach Euro (24h Cache)."""
-    if not waehrung or waehrung.upper() == "EUR":
-        return 1.0
-    waehrung = waehrung.upper()
-    if waehrung == "GBX":  # Britische Pence -> Pfund -> EUR
-        return hole_wechselkurs_zu_eur("GBP") / 100.0
+def load_json(path, default):
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return default
+    return default
+
+
+def save_json(path, data):
     try:
-        paar = f"{waehrung}EUR=X"
-        df = bereinige_dataframe(yf.download(paar, period="5d", interval="1d", progress=False))
-        if not df.empty and "Close" in df.columns:
-            kurs = float(df["Close"].dropna().iloc[-1])
-            if kurs > 0:
-                return kurs
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Universen & Namen-Erkennung
+# ---------------------------------------------------------------------------
+BUILTIN_WATCHLISTS = {
+    "Tech-Auswahl": ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AMD", "NFLX", "CRM"],
+    "DAX-Auswahl (Top 10)": ["SAP.DE", "SIE.DE", "ALV.DE", "DTE.DE", "BAS.DE", "BMW.DE", "MBG.DE", "VOW3.DE", "MUV2.DE", "AIR.DE"],
+    "Europa Blue Chips": [
+        "SAP.DE", "SIE.DE", "ASML.AS", "LVMH.PA", "MC.PA", "OR.PA", "TTE.PA", "SAN.PA",
+        "NESN.SW", "ROG.SW", "NOVN.SW", "AZN.L", "SHEL.L", "HSBA.L", "ULVR.L", "INGA.AS",
+    ],
+    "S&P-Auswahl (Auszug)": ["AAPL", "MSFT", "AMZN", "GOOGL", "BRK-B", "JPM", "V", "JNJ", "WMT", "XOM"],
+    "Asia Tech": ["TSM", "ASML", "SONY", "NTDOY", "BABA", "TCEHY", "PDD", "BIDU", "005930.KS", "6861.T"],
+    "Japan (Nikkei-Auswahl)": ["7203.T", "6758.T", "9984.T", "6861.T", "8306.T", "9432.T", "4063.T", "6501.T", "7267.T", "6902.T"],
+    "Hongkong / China": ["0700.HK", "9988.HK", "3690.HK", "9618.HK", "1810.HK", "BABA", "JD", "PDD", "BIDU", "NIO"],
+    "Top Krypto": ["BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "XRP-USD", "DOGE-USD", "ADA-USD", "AVAX-USD", "DOT-USD", "LINK-USD"],
+    "Edelmetalle": ["GC=F", "SI=F", "PL=F", "PA=F", "GLD", "SLV", "IAU", "GDX", "SIL"],
+}
+
+DAX40_TICKERS = [
+    "ADS.DE", "AIR.DE", "ALV.DE", "BAS.DE", "BAYN.DE", "BEI.DE", "BMW.DE", "BNR.DE",
+    "CBK.DE", "CON.DE", "1COV.DE", "DHL.DE", "DBK.DE", "DB1.DE", "DTE.DE", "DTG.DE",
+    "EOAN.DE", "FRE.DE", "HNR1.DE", "HEI.DE", "HEN3.DE", "IFX.DE", "MBG.DE", "MRK.DE",
+    "MTX.DE", "MUV2.DE", "PAH3.DE", "QIA.DE", "RHM.DE", "RWE.DE", "SAP.DE", "SRT3.DE",
+    "SIE.DE", "ENR.DE", "SHL.DE", "SY1.DE", "VOW3.DE", "VNA.DE", "ZAL.DE", "G24.DE",
+]
+
+# Frankreich CAC40 (Auswahl, Yahoo-Ticker)
+CAC40_TICKERS = [
+    "MC.PA", "OR.PA", "TTE.PA", "SAN.PA", "AIR.PA", "SU.PA", "AI.PA", "BNP.PA",
+    "DG.PA", "EL.PA", "CS.PA", "BN.PA", "KER.PA", "RI.PA", "STLAP.PA", "VIV.PA",
+    "CAP.PA", "SGO.PA", "HO.PA", "ML.PA",
+]
+
+# Niederlande / Belgien
+BENELUX_TICKERS = [
+    "ASML.AS", "INGA.AS", "PHIA.AS", "AD.AS", "UNA.AS", "HEIA.AS", "PRX.AS",
+    "KBC.BR", "ABI.BR", "ARGX.BR",
+]
+
+# Schweiz
+SWISS_TICKERS = [
+    "NESN.SW", "ROG.SW", "NOVN.SW", "UBSG.SW", "ZURN.SW", "ABBN.SW", "LONN.SW",
+    "CFR.SW", "SIKA.SW", "GIVN.SW",
+]
+
+# UK (FTSE-Auswahl; Yahoo nutzt oft .L)
+UK_TICKERS = [
+    "SHEL.L", "AZN.L", "HSBA.L", "ULVR.L", "BP.L", "GSK.L", "DGE.L", "RIO.L",
+    "BATS.L", "LLOY.L", "VOD.L", "NG.L", "BARC.L", "RR.L", "AAL.L",
+]
+
+# Europa gesamt (Scanner-Universum)
+EUROPE_TICKERS = list(dict.fromkeys(
+    DAX40_TICKERS + CAC40_TICKERS + BENELUX_TICKERS + SWISS_TICKERS + UK_TICKERS
+))
+
+NASDAQ_TICKERS = [
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AVGO", "PEP", "COST",
+    "ADBE", "CSCO", "NFLX", "AMD", "INTC", "QCOM", "TXN", "INTU", "AMAT", "BKNG",
+]
+
+TOP10_CRYPTO = [
+    "BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "XRP-USD",
+    "DOGE-USD", "ADA-USD", "AVAX-USD", "DOT-USD", "LINK-USD",
+]
+
+# Edelmetalle: Spot-Futures + gängige ETFs (USD)
+PRECIOUS_METALS = [
+    "GC=F",   # Gold Spot/Future
+    "SI=F",   # Silber
+    "PL=F",   # Platin
+    "PA=F",   # Palladium
+    "GLD",    # Gold ETF
+    "SLV",    # Silber ETF
+    "IAU",    # Gold ETF klein
+    "GDX",    # Goldminen
+    "SIL",    # Silberminen
+]
+
+ASIA_TECH = ["TSM", "ASML", "SONY", "NTDOY", "BABA", "TCEHY", "PDD", "BIDU", "005930.KS", "6861.T", "2330.TW"]
+JAPAN_TICKERS = ["7203.T", "6758.T", "9984.T", "6861.T", "8306.T", "9432.T", "4063.T", "6501.T", "7267.T", "6902.T"]
+HK_CHINA = ["0700.HK", "9988.HK", "3690.HK", "9618.HK", "1810.HK", "BABA", "JD", "PDD", "BIDU", "NIO"]
+
+SP500_FALLBACK = [
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK-B", "JPM", "V",
+    "JNJ", "WMT", "XOM", "UNH", "MA", "PG", "HD", "COST", "MRK", "ABBV",
+    "CVX", "PEP", "KO", "BAC", "ADBE", "CRM", "TMO", "MCD", "CSCO", "ABT",
+]
+
+
+@st.cache_data(ttl=86400)
+def fetch_sp500_tickers():
+    try:
+        tables = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
+        symbols = tables[0]["Symbol"].tolist()
+        return [s.replace(".", "-") for s in symbols]
+    except Exception:
+        return SP500_FALLBACK
+
+
+COMMON_NAMES = {
+    # US & Tech
+    "APPLE": "AAPL", "MICROSOFT": "MSFT", "GOOGLE": "GOOGL", "ALPHABET": "GOOGL",
+    "AMAZON": "AMZN", "NVIDIA": "NVDA", "META": "META", "FACEBOOK": "META",
+    "TESLA": "TSLA", "NETFLIX": "NFLX", "AMD": "AMD", "SALESFORCE": "CRM",
+    "BERKSHIRE": "BRK-B", "BERKSHIRE HATHAWAY": "BRK-B", "JPMORGAN": "JPM", "JPM": "JPM",
+    "VISA": "V", "JOHNSON & JOHNSON": "JNJ", "JNJ": "JNJ", "WALMART": "WMT",
+    "EXXON": "XOM", "COCA-COLA": "KO", "COCA COLA": "KO", "DISNEY": "DIS",
+    "NIKE": "NKE", "MCDONALD'S": "MCD", "MCDONALDS": "MCD", "STARBUCKS": "SBUX",
+    "INTEL": "INTC", "BROADCOM": "AVGO", "PEPSICO": "PEP", "COSTCO": "COST",
+    "ADOBE": "ADBE", "CISCO": "CSCO", "QUALCOMM": "QCOM", "TEXAS INSTRUMENTS": "TXN",
+    "INTUIT": "INTU", "APPLIED MATERIALS": "AMAT", "BOOKING": "BKNG",
+    "PALANTIR": "PLTR", "MICROSTRATEGY": "MSTR", "COINBASE": "COIN",
+    "UNITEDHEALTH": "UNH", "MASTERCARD": "MA", "PROCTER & GAMBLE": "PG", "PROCTER": "PG",
+    "HOME DEPOT": "HD", "ABBVIE": "ABBV", "CHEVRON": "CVX", "BANK OF AMERICA": "BAC",
+
+    # DAX & Germany
+    "SAP": "SAP.DE", "SIEMENS": "SIE.DE", "ALLIANZ": "ALV.DE",
+    "DEUTSCHE TELEKOM": "DTE.DE", "TELEKOM": "DTE.DE",
+    "BASF": "BAS.DE", "BMW": "BMW.DE", "MERCEDES": "MBG.DE", "MERCEDES-BENZ": "MBG.DE",
+    "VOLKSWAGEN": "VOW3.DE", "VW": "VOW3.DE", "MUNICH RE": "MUV2.DE", "MÜNCHENER RÜCK": "MUV2.DE",
+    "INFINEON": "IFX.DE", "DEUTSCHE BANK": "DBK.DE", "COMMERZBANK": "CBK.DE",
+    "ADIDAS": "ADS.DE", "BAYER": "BAYN.DE", "HENKEL": "HEN3.DE", "MERCK": "MRK.DE",
+    "AIRBUS": "AIR.DE", "BEIERSDORF": "BEI.DE", "BRENNTAG": "BNR.DE",
+    "CONTINENTAL": "CON.DE", "COVESTRO": "1COV.DE", "DHL": "DHL.DE", "DEUTSCHE POST": "DHL.DE",
+    "DEUTSCHE BÖRSE": "DB1.DE", "DAIMLER TRUCK": "DTG.DE", "E.ON": "EOAN.DE", "EON": "EOAN.DE",
+    "FRESENIUS": "FRE.DE", "HANNOVER RÜCK": "HNR1.DE", "HEIDELBERG MATERIALS": "HEI.DE",
+    "MTU": "MTX.DE", "PORSCHE": "P911.DE", "QIAGEN": "QIA.DE", "RHEINMETALL": "RHM.DE",
+    "RWE": "RWE.DE", "SARTORIUS": "SRT3.DE", "SIEMENS ENERGY": "ENR.DE",
+    "SIEMENS HEALTHINEERS": "SHL.DE", "SYMRISE": "SY1.DE", "VONOVIA": "VNA.DE",
+    "ZALANDO": "ZAL.DE",
+
+    # Europe (CAC40, Benelux, Swiss, UK)
+    "LVMH": "MC.PA", "LOUIS VUITTON": "MC.PA", "LOREAL": "OR.PA", "L'OREAL": "OR.PA",
+    "TOTALENERGIES": "TTE.PA", "TOTAL": "TTE.PA", "SANOFI": "SAN.PA",
+    "NESTLE": "NESN.SW", "NESTLÉ": "NESN.SW", "ROCHE": "ROG.SW", "NOVARTIS": "NOVN.SW",
+    "ASTRAZENECA": "AZN.L", "SHELL": "SHEL.L", "HSBC": "HSBA.L", "UNILEVER": "ULVR.L",
+    "BP": "BP.L", "ING": "INGA.AS", "PHILIPS": "PHIA.AS", "HERMES": "RMS.PA", "HERMÈS": "RMS.PA",
+    "SCHNEIDER": "SU.PA", "SCHNEIDER ELECTRIC": "SU.PA", "BNP": "BNP.PA", "BNP PARIBAS": "BNP.PA",
+    "UBS": "UBSG.SW", "ZURICH": "ZURN.SW", "ABB": "ABBN.SW",
+    "ASML": "ASML.AS", "ADYEN": "ADYEN.AS", "HEINEKEN": "HEIA.AS",
+    "STELLANTIS": "STLAP.PA", "FERRARI": "RACE.MI", "DANONE": "BN.PA",
+    "CAPGEMINI": "CAP.PA", "DASSAULT": "DSY.PA", "AIR LIQUIDE": "AI.PA",
+
+    # Asia / Global
+    "TSMC": "TSM", "TAIWAN SEMICONDUCTOR": "TSM", "SAMSUNG": "005930.KS",
+    "SONY": "SONY", "TOYOTA": "7203.T", "SOFTBANK": "9984.T", "KEYENCE": "6861.T",
+    "ALIBABA": "BABA", "TENCENT": "TCEHY", "NINTENDO": "NTDOY",
+    "BYD": "BYDDY", "XIAOMI": "1810.HK", "XIAOMI CORP": "1810.HK",
+    "MEITUAN": "3690.HK", "JD.COM": "JD", "JDCOM": "JD",
+    "BAIDU": "BIDU", "PINDUODUO": "PDD", "NETEASE": "NTES", "NIO": "NIO",
+    "HONDA": "7267.T", "HITACHI": "6501.T", "MITSUBISHI": "8306.T",
+
+    # Crypto
+    "BITCOIN": "BTC-USD", "BTC": "BTC-USD", "ETHEREUM": "ETH-USD", "ETH": "ETH-USD",
+    "SOLANA": "SOL-USD", "SOL": "SOL-USD", "CARDANO": "ADA-USD",
+    "RIPPLE": "XRP-USD", "XRP": "XRP-USD", "DOGECOIN": "DOGE-USD", "DOGE": "DOGE-USD",
+    "BINANCE": "BNB-USD", "BNB": "BNB-USD", "AVALANCHE": "AVAX-USD",
+    "POLKADOT": "DOT-USD", "CHAINLINK": "LINK-USD",
+
+    # Metals
+    "GOLD": "GC=F", "GOLDPREIS": "GC=F", "SILBER": "SI=F", "SILVER": "SI=F",
+    "PLATIN": "PL=F", "PLATINUM": "PL=F", "PALLADIUM": "PA=F",
+    "GLD": "GLD", "SLV": "SLV",
+}
+
+
+@st.cache_data(ttl=86400)
+def resolve_ticker(query: str) -> str:
+    query = query.strip()
+    if not query:
+        return ""
+    
+    q_upper = query.upper()
+    
+    # 1. Direkte Treffer und Sonderfälle
+    if "XRP" in q_upper: return "XRP-USD"
+    if "XIAOMI" in q_upper: return "1810.HK"
+    if "MÜNCHENER RÜCK" in q_upper or "MUNICH RE" in q_upper: return "MUV2.DE"
+    
+    if q_upper in COMMON_NAMES:
+        return COMMON_NAMES[q_upper]
+        
+    # 2. Teil-Treffer im Dictionary
+    for name, sym in COMMON_NAMES.items():
+        # Entweder Suchbegriff im Namen oder Name im Suchbegriff (mit Mindestlänge)
+        if (len(q_upper) >= 3 and q_upper in name) or (len(name) >= 4 and name in q_upper):
+            return sym
+
+    # 3. yfinance Fallback-Suche
+    raw = query.strip().upper()
+    looks_like_ticker = " " not in query and len(query) <= 12
+    try:
+        search_results = yf.Search(query, max_results=8).quotes
+        if search_results:
+            equities = [r for r in search_results if r.get("quoteType") == "EQUITY"]
+            pool = equities or search_results
+            
+            # Intelligente Börsenwahl: Bevorzuge europäische Heimatbörsen
+            for r in pool:
+                sym = r.get("symbol", "")
+                ex = r.get("exchange", "")
+                # Bevorzuge direkte DAX/CAC/US Ticker
+                if ex in ("GER", "FRA", "PAR", "AMS", "NMS", "NYQ") and not sym.endswith(".F"):
+                    return sym
+                    
+            symbol = pool[0].get("symbol")
+            if symbol:
+                return symbol
     except Exception:
         pass
-    # Fallback-Richtwerte falls Yahoo kurzzeitig nicht antwortet
-    fallback = {"USD": 0.92, "CHF": 1.06, "GBP": 1.19, "HKD": 0.118, "DKK": 0.134}
-    return fallback.get(waehrung, 1.0)
+    return raw if looks_like_ticker else query
+
+# ---------------------------------------------------------------------------
+# Kursdaten + technische Indikatoren
+# ---------------------------------------------------------------------------
+# Fallback-Ticker wenn Yahoo den Haupt-Ticker nicht liefert
+TICKER_FALLBACKS = {
+    "1810.HK": ["1810.HK", "XIACF", "3CP.F"],
+    "XIAOMI": ["1810.HK", "XIACF"],
+    "0700.HK": ["0700.HK", "TCEHY"],
+    "9988.HK": ["9988.HK", "BABA"],
+    "3690.HK": ["3690.HK", "MPNGY"],
+    "GC=F": ["GC=F", "GLD", "IAU"],
+    "SI=F": ["SI=F", "SLV"],
+    "PL=F": ["PL=F"],
+    "PA=F": ["PA=F"],
+    "BTC-USD": ["BTC-USD", "BTC-EUR"],
+    "ETH-USD": ["ETH-USD", "ETH-EUR"],
+}
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def hole_stammdaten(ticker: str) -> dict:
-    """Holt den vollen Firmennamen, die Währung und den nächsten Quartalszahlen-Termin."""
-    info_daten = {
-        "name": ticker,
-        "waehrung": "EUR",
-        "sektor": "Unbekannt",
-        "earnings_datum": None,
-    }
-    try:
-        t = yf.Ticker(ticker)
-        info = t.info or {}
-        info_daten["name"] = info.get("longName") or info.get("shortName") or ticker
-        info_daten["waehrung"] = info.get("currency") or ("EUR" if ticker.endswith(".DE") else "USD")
-        info_daten["sektor"] = info.get("sector") or "Keine Angabe"
-
-        # Nächsten Earnings-Termin auslesen
-        cal = t.calendar
-        if isinstance(cal, dict) and "Earnings Date" in cal and cal["Earnings Date"]:
-            ed = cal["Earnings Date"][0]
-            info_daten["earnings_datum"] = str(ed)[:10]
-        elif isinstance(cal, pd.DataFrame) and not cal.empty:
-            info_daten["earnings_datum"] = str(cal.iloc[0, 0])[:10]
-    except Exception:
-        if ticker.endswith(".DE") or ticker.endswith(".AS") or ticker.endswith(".PA"):
-            info_daten["waehrung"] = "EUR"
-        elif ticker.endswith(".HK"):
-            info_daten["waehrung"] = "HKD"
-        elif ticker.endswith(".SW"):
-            info_daten["waehrung"] = "CHF"
-        else:
-            info_daten["waehrung"] = "USD"
-    return info_daten
-
-
-@st.cache_data(ttl=900, show_spinner=False)
-def lade_kursdaten_eur(ticker: str, zeitraum: str = "1y") -> pd.DataFrame:
-    """Lädt historische Kursdaten, rechnet alles in Euro (€) um und berechnet Indikatoren."""
-    try:
-        raw = yf.download(ticker, period=zeitraum, interval="1d", progress=False)
-        df = bereinige_dataframe(raw)
-        if df.empty or len(df) < 30:
-            return pd.DataFrame()
-
-        stamm = hole_stammdaten(ticker)
-        faktor = hole_wechselkurs_zu_eur(stamm["waehrung"])
-
-        for spalte in ["Open", "High", "Low", "Close"]:
-            if spalte in df.columns:
-                df[spalte] = pd.to_numeric(df[spalte], errors="coerce") * faktor
-
-        df["Volume"] = pd.to_numeric(df["Volume"], errors="coerce").fillna(0)
-        df = df.dropna(subset=["Close"]).copy()
-
-        # Gleitende Durchschnitte (SMA 50 & SMA 200)
-        df["SMA_50"] = df["Close"].rolling(window=50).mean()
-        df["SMA_200"] = df["Close"].rolling(window=200).mean()
-
-        # RSI (14 Tage nach Wilder-Glättung)
-        delta = df["Close"].diff()
-        gewinn = delta.clip(lower=0)
-        verlust = -delta.clip(upper=0)
-        avg_gewinn = gewinn.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
-        avg_verlust = verlust.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
-        rs = avg_gewinn / avg_verlust.replace(0, np.nan)
-        df["RSI_14"] = 100 - (100 / (1 + rs))
-        df["RSI_14"] = df["RSI_14"].fillna(50)
-
-        # MACD (12, 26, 9)
-        ema_12 = df["Close"].ewm(span=12, adjust=False).mean()
-        ema_26 = df["Close"].ewm(span=26, adjust=False).mean()
-        df["MACD"] = ema_12 - ema_26
-        df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
-        df["MACD_Hist"] = df["MACD"] - df["MACD_Signal"]
-
-        # ATR (14 Tage) für Stop-Loss-Berechnung
-        high_low = df["High"] - df["Low"]
-        high_close = (df["High"] - df["Close"].shift()).abs()
-        low_close = (df["Low"] - df["Close"].shift()).abs()
-        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        df["ATR_14"] = true_range.rolling(window=14).mean()
-
-        # Volumen-Durchschnitt (20 Tage)
-        df["Vol_SMA_20"] = df["Volume"].rolling(window=20).mean()
-
-        return df
-    except Exception:
-        return pd.DataFrame()
-
-
-def analysiere_aktie(ticker: str) -> dict | None:
-    """Erstellt eine vollständige, leicht verständliche Auswertung in Euro (€)."""
-    df = lade_kursdaten_eur(ticker, zeitraum="1y")
-    if df.empty or len(df) < 50:
-        return None
-
-    stamm = hole_stammdaten(ticker)
-    aktuell = float(df["Close"].iloc[-1])
-    vortag = float(df["Close"].iloc[-2])
-    tages_diff_pct = ((aktuell - vortag) / vortag) * 100
-
-    sma50 = float(df["SMA_50"].iloc[-1]) if not pd.isna(df["SMA_50"].iloc[-1]) else aktuell
-    sma200 = float(df["SMA_200"].iloc[-1]) if not pd.isna(df["SMA_200"].iloc[-1]) else sma50
-
-    rsi = float(df["RSI_14"].iloc[-1])
-    rsi_vor5 = float(df["RSI_14"].iloc[-6]) if len(df) >= 6 else rsi
-    macd_hist = float(df["MACD_Hist"].iloc[-1])
-    macd_hist_vortag = float(df["MACD_Hist"].iloc[-2])
-    atr = float(df["ATR_14"].iloc[-1]) if not pd.isna(df["ATR_14"].iloc[-1]) else aktuell * 0.03
-
-    vol_aktuell = float(df["Volume"].iloc[-1])
-    vol_schnitt = float(df["Vol_SMA_20"].iloc[-1]) if not pd.isna(df["Vol_SMA_20"].iloc[-1]) else vol_aktuell
-    volumen_bestaetigt = vol_aktuell > vol_schnitt and vol_schnitt > 0
-
-    hoch_52w = float(df["High"].max())
-    tief_52w = float(df["Low"].min())
-    abstand_hoch_pct = ((aktuell - hoch_52w) / hoch_52w) * 100
-
-    # Golden Cross Check (SMA 50 kreuzt SMA 200 nach oben in den letzten 5 Tagen)
-    golden_cross_neu = False
-    if len(df) >= 6 and not df["SMA_200"].iloc[-6:].isna().any():
-        golden_cross_neu = (df["SMA_50"].iloc[-6] <= df["SMA_200"].iloc[-6]) and (sma50 > sma200)
-
-    # Trend-Follower Check
-    ist_trend_follower = (aktuell > sma50) and (sma50 > sma200) and (45 <= rsi <= 72)
-
-    # TFA-Check (Turnaround-Formel: >= 35% unter 52W-Hoch + RSI war überverkauft / dreht hoch oder erobert SMA 50)
-    ist_tfa = (abstand_hoch_pct <= -35.0) and (
-        (rsi < 38) or (rsi_vor5 < 35 and rsi > rsi_vor5) or (aktuell > sma50 and macd_hist > macd_hist_vortag)
-    )
-
-    # ATR-Stop-Loss & Chance-Risiko-Verhältnis (CRV)
-    stop_loss_eur = max(0.01, aktuell - 2.0 * atr)
-    risiko_eur = max(0.01, aktuell - stop_loss_eur)
-    chance_eur = max(0.0, hoch_52w - aktuell)
-    crv = round(chance_eur / risiko_eur, 2)
-
-    # Earnings-Warnung prüfen
-    earnings_warnung = None
-    if stamm["earnings_datum"]:
+@st.cache_data(ttl=3600)
+def load_price_history(ticker: str, period: str = "2y"):
+    candidates = TICKER_FALLBACKS.get(ticker.upper(), [ticker])
+    if ticker not in candidates:
+        candidates = [ticker] + list(candidates)
+    data = pd.DataFrame()
+    for t in candidates:
         try:
-            ed_date = datetime.strptime(stamm["earnings_datum"], "%Y-%m-%d").date()
-            tage_bis_earnings = (ed_date - datetime.now().date()).days
-            if 0 <= tage_bis_earnings <= 7:
-                earnings_warnung = f"Quartalszahlen in {tage_bis_earnings} Tag(en) am {ed_date.strftime('%d.%m.%Y')}!"
+            data = yf.Ticker(t).history(period=period, auto_adjust=True)
+            if data is not None and not data.empty:
+                break
+        except Exception:
+            data = pd.DataFrame()
+            continue
+    if data is None or data.empty:
+        return pd.DataFrame()
+    # Zeitzone entfernen → verhindert Plotly/Compare-Probleme
+    try:
+        if getattr(data.index, "tz", None) is not None:
+            data.index = data.index.tz_localize(None)
+    except Exception:
+        pass
+
+    data["SMA50"] = data["Close"].rolling(window=50).mean()
+    data["SMA200"] = data["Close"].rolling(window=200).mean()
+
+    delta = data["Close"].diff()
+    gain = delta.clip(lower=0).rolling(window=14).mean()
+    loss = (-delta.clip(upper=0)).rolling(window=14).mean()
+    rs = gain / loss.replace(0, np.nan)
+    data["RSI"] = 100 - (100 / (1 + rs))
+
+    ema12 = data["Close"].ewm(span=12, adjust=False).mean()
+    ema26 = data["Close"].ewm(span=26, adjust=False).mean()
+    data["MACD"] = ema12 - ema26
+    data["MACD_signal"] = data["MACD"].ewm(span=9, adjust=False).mean()
+    data["MACD_hist"] = data["MACD"] - data["MACD_signal"]
+    data["Return"] = data["Close"].pct_change()
+    return data
+
+
+def detect_golden_cross(data: pd.DataFrame, lookback_days: int = 10) -> bool:
+    df = data.dropna(subset=["SMA50", "SMA200"])
+    if len(df) < lookback_days + 1:
+        return False
+    recent = df.tail(lookback_days + 1)
+    diff = recent["SMA50"] - recent["SMA200"]
+    return bool(((diff.shift(1) < 0) & (diff > 0)).any())
+
+
+def is_bullish_now(data: pd.DataFrame) -> bool:
+    df = data.dropna(subset=["SMA50", "SMA200"])
+    if df.empty:
+        return False
+    last = df.iloc[-1]
+    return bool(last["SMA50"] > last["SMA200"])
+
+
+def compute_ta_signal(data: pd.DataFrame) -> str:
+    if data.empty or "RSI" not in data.columns:
+        return "—"
+    bullish = is_bullish_now(data)
+    gc = detect_golden_cross(data)
+    rsi_series = data["RSI"].dropna()
+    last_rsi = rsi_series.iloc[-1] if not rsi_series.empty else None
+    if gc or (bullish and (last_rsi is None or last_rsi < 70)):
+        return "🟢 Kaufsignal"
+    if (not bullish) and (last_rsi is None or last_rsi > 40):
+        return "🔴 Verkaufssignal"
+    return "🟡 Neutral"
+
+
+def compute_fib_entry_zone(data: pd.DataFrame, lookback_days: int = 126):
+    recent = data.tail(lookback_days)
+    if recent.empty:
+        return None
+    swing_high = recent["High"].max()
+    swing_low = recent["Low"].min()
+    diff = swing_high - swing_low
+    if diff <= 0:
+        return None
+    fib_50 = swing_high - 0.5 * diff
+    fib_618 = swing_high - 0.618 * diff
+    return min(fib_50, fib_618), max(fib_50, fib_618)
+
+
+def compute_entry_zones(data: pd.DataFrame, fx: float = 1.0, lookback_days: int = 252):
+    """Ermittelt drei technische Kauf-Einstiegszonen aus Fibonacci-Retracements.
+
+    Die Zonen sind:
+    1. flacher Rücksetzer: 23,6–38,2 %
+    2. normaler Rücksetzer: 38,2–50,0 %
+    3. tiefer Rücksetzer: 50,0–61,8 %
+
+    Die Berechnung funktioniert identisch für Aktien, ETFs, Rohstoffe und Krypto.
+    Alle Preise werden in der im Chart verwendeten EUR-Währung zurückgegeben.
+    """
+    if data.empty or not {"High", "Low", "Close"}.issubset(data.columns):
+        return []
+
+    recent = data.tail(lookback_days).dropna(subset=["High", "Low", "Close"]).copy()
+    recent = recent.replace([np.inf, -np.inf], np.nan).dropna(subset=["High", "Low", "Close"])
+    if len(recent) < 30:
+        return []
+
+    swing_high = float(recent["High"].max())
+    swing_low = float(recent["Low"].min())
+    diff = swing_high - swing_low
+    if diff <= 0:
+        return []
+
+    # Retracement-Level vom Swing-High nach unten.
+    fib236 = swing_high - 0.236 * diff
+    fib382 = swing_high - 0.382 * diff
+    fib500 = swing_high - 0.500 * diff
+    fib618 = swing_high - 0.618 * diff
+
+    zones = [
+        {"name": "EINSTIEG 1", "typ": "Flacher Rücksetzer", "low": fib382, "high": fib236},
+        {"name": "EINSTIEG 2", "typ": "Normaler Rücksetzer", "low": fib500, "high": fib382},
+        {"name": "EINSTIEG 3", "typ": "Tiefer Rücksetzer", "low": fib618, "high": fib500},
+    ]
+
+    last = float(recent["Close"].iloc[-1])
+    for z in zones:
+        z["low"] *= fx
+        z["high"] *= fx
+        z["mitte"] = (z["low"] + z["high"]) / 2
+        z["distanz_pct"] = (z["mitte"] / (last * fx) - 1) * 100
+        z["unter_kurs"] = z["high"] <= last * fx
+
+    return zones
+
+
+def compute_risk_metrics(data: pd.DataFrame):
+    if data.empty or "Return" not in data.columns:
+        return None, None
+    rets = data["Return"].dropna()
+    if len(rets) < 20:
+        return None, None
+    vol = float(rets.std() * np.sqrt(252) * 100)
+    cum = (1 + rets).cumprod()
+    peak = cum.cummax()
+    dd = ((cum - peak) / peak * 100).min()
+    return round(vol, 1), round(dd, 1)
+
+
+@st.cache_data(ttl=3600)
+def compute_market_correlation(ticker: str, period: str = "1y") -> dict:
+    """Korrelation der Aktie zum passenden Marktindex (ca. 1 Jahr)."""
+    t = (ticker or "").upper()
+    if t.endswith(".DE") or t.endswith(".PA") or t.endswith(".AS") or t.endswith(".BR") or t.endswith(".MI"):
+        bench = "^STOXX50E"
+        bench_name = "Euro Stoxx 50"
+    elif t.endswith(".L"):
+        bench = "^FTSE"
+        bench_name = "FTSE 100"
+    elif t.endswith(".SW"):
+        bench = "^SSMI"
+        bench_name = "SMI"
+    elif t.endswith(".HK") or t.endswith(".T") or t.endswith(".KS") or t.endswith(".TW"):
+        bench = "^HSI"
+        bench_name = "Hang Seng"
+    elif "-USD" in t or t in ("BTC-USD", "ETH-USD"):
+        bench = "BTC-USD"
+        bench_name = "Bitcoin"
+    elif t.endswith("=F") or t in ("GLD", "SLV", "IAU", "GDX", "SIL"):
+        bench = "GC=F"
+        bench_name = "Gold"
+    else:
+        bench = "^GSPC"
+        bench_name = "S&P 500"
+    try:
+        a = yf.Ticker(ticker).history(period=period)["Close"].pct_change().dropna()
+        b = yf.Ticker(bench).history(period=period)["Close"].pct_change().dropna()
+        joined = pd.concat([a, b], axis=1, join="inner").dropna()
+        if len(joined) < 30:
+            return {"corr": None, "bench": bench_name, "bench_ticker": bench}
+        joined.columns = ["a", "b"]
+        corr = float(joined["a"].corr(joined["b"]))
+        return {"corr": round(corr, 2), "bench": bench_name, "bench_ticker": bench}
+    except Exception:
+        return {"corr": None, "bench": bench_name, "bench_ticker": bench}
+
+
+def load_dividend_summary(ticker: str) -> dict:
+    """Kurze Dividenden-Info aus yfinance."""
+    try:
+        tk = yf.Ticker(ticker)
+        info = tk.info or {}
+        div_y = info.get("dividendYield")
+        div_r = info.get("dividendRate")
+        ex_div = info.get("exDividendDate")
+        hist = tk.dividends
+        last_div = None
+        count_3y = 0
+        if hist is not None and len(hist) > 0:
+            last_div = float(hist.iloc[-1])
+            cutoff = hist.index.max() - pd.Timedelta(days=365 * 3)
+            count_3y = int((hist.index >= cutoff).sum())
+        return {
+            "yield": div_y,
+            "rate": div_r,
+            "last": last_div,
+            "count_3y": count_3y,
+            "ex_div": ex_div,
+        }
+    except Exception:
+        return {"yield": None, "rate": None, "last": None, "count_3y": 0, "ex_div": None}
+
+
+@st.cache_data(ttl=3600)
+def get_fx_rates() -> dict:
+    """
+    FX-Kurse relativ zu EUR (wie viele Fremdwährungseinheiten für 1 EUR).
+    Damit: EUR-Wert = Preis_fremd / rate[currency]
+    Fallback-Werte falls Yahoo nicht erreichbar.
+    """
+    defaults = {
+        "USD": 1.08,
+        "GBP": 0.86,
+        "CHF": 0.94,
+        "JPY": 160.0,
+        "HKD": 8.4,
+        "KRW": 1450.0,
+        "TWD": 34.0,
+        "EUR": 1.0,
+    }
+    pairs = {
+        "USD": "EURUSD=X",
+        "GBP": "EURGBP=X",
+        "CHF": "EURCHF=X",
+        "JPY": "EURJPY=X",
+        "HKD": "EURHKD=X",
+        "KRW": "EURKRW=X",
+        "TWD": "EURTWD=X",
+    }
+    rates = dict(defaults)
+    for cur, pair in pairs.items():
+        try:
+            h = yf.Ticker(pair).history(period="5d")
+            if not h.empty:
+                rates[cur] = float(h["Close"].iloc[-1])
         except Exception:
             pass
+    rates["EUR"] = 1.0
+    return rates
 
-    # Klartext-Gesamturteil auf Deutsch
-    if golden_cross_neu:
-        signal_text = "Kaufsignal (Frisches Golden Cross)"
-        signal_farbe = "green"
-    elif ist_trend_follower and volumen_bestaetigt and macd_hist > 0:
-        signal_text = "Starker Aufwärtstrend (Kaufen / Halten)"
-        signal_farbe = "green"
-    elif ist_tfa:
-        signal_text = "Turnaround-Chance (TFA-Signal)"
-        signal_farbe = "amber"
-    elif rsi > 75:
-        signal_text = "Überhitzt – Teilgewinne absichern"
-        signal_farbe = "red"
-    elif aktuell < sma50 and aktuell < sma200:
-        signal_text = "Abwärtstrend – Abwarten"
-        signal_farbe = "red"
+
+def get_eur_usd_rate() -> float:
+    """Kompatibilität: EUR/USD aus get_fx_rates."""
+    return float(get_fx_rates().get("USD", 1.08))
+
+
+def detect_currency(ticker: str, info: dict | None = None) -> str:
+    """Best-effort Währung: EUR/JPY/HKD/KRW/TWD aus Suffix oder info, sonst USD."""
+    t = ticker.upper()
+    
+    # Indizes fest verdrahten
+    if t in ("^GDAXI", "^STOXX50E", "^MDAXI", "^TECDAX"): return "EUR"
+    if t in ("^GSPC", "^NDX", "^DJI", "^RUT", "^VIX"): return "USD"
+    if t == "^N225": return "JPY"
+    if t == "^HSI": return "HKD"
+    if t.startswith("^"): return "USD"  # Default für andere Indizes
+    
+    if t.endswith((".DE", ".PA", ".AS", ".BR", ".MI", ".MC", ".HE", ".ST", ".OL", ".LS", ".VI")):
+        return "EUR"
+    if t.endswith(".L"):
+        return "GBP"
+    if t.endswith(".SW"):
+        return "CHF"
+    if t.endswith(".T"):
+        return "JPY"
+    if t.endswith(".HK"):
+        return "HKD"
+    if t.endswith(".KS") or t.endswith(".KQ"):
+        return "KRW"
+    if t.endswith(".TW"):
+        return "TWD"
+    if t.endswith("-USD") or t.endswith("=X") or t.endswith("=F"):
+        return "USD"
+    if info:
+        cur = info.get("currency") or info.get("financialCurrency")
+        if cur:
+            return cur.upper()
+    return "USD"
+    if info:
+        cur = info.get("currency") or info.get("financialCurrency")
+        if cur:
+            return cur.upper()
+    return "USD"
+
+
+def to_eur(value, currency: str, eur_usd: float = None, rates: dict | None = None):
+    """Konvertiert einen Preis in EUR. rates = get_fx_rates(); eur_usd optional Fallback."""
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except Exception:
+        return None
+    cur = (currency or "USD").upper()
+    if cur == "EUR":
+        return v
+    if rates is None:
+        rates = {}
+        if eur_usd:
+            rates["USD"] = eur_usd
+    rate = rates.get(cur)
+    if rate is None and cur == "USD" and eur_usd:
+        rate = eur_usd
+    if rate and rate > 0:
+        return v / rate
+    return v
+
+
+def format_price_eur(value, currency: str, eur_usd: float = None, rates: dict | None = None) -> str:
+    if value is None:
+        return "—"
+    try:
+        v = float(value)
+    except Exception:
+        return "—"
+    cur = (currency or "USD").upper()
+    symbols = {
+        "USD": "$", "GBP": "£", "CHF": "CHF", "JPY": "¥",
+        "HKD": "HK$", "KRW": "₩", "TWD": "NT$", "EUR": "€",
+    }
+    if rates is None:
+        rates = get_fx_rates()
+        if eur_usd:
+            rates = dict(rates)
+            rates["USD"] = eur_usd
+    eur_val = to_eur(v, cur, eur_usd=eur_usd, rates=rates)
+    if eur_val is None:
+        return "—"
+    if cur == "EUR":
+        return f"{v:.2f} €"
+    sym = symbols.get(cur, cur)
+    return f"{eur_val:.2f} €  ({v:.2f} {sym})"
+
+
+def last_golden_cross_date(data: pd.DataFrame):
+    """Datum des letzten Golden Cross (oder None)."""
+    df = data.dropna(subset=["SMA50", "SMA200"]).copy()
+    if len(df) < 2:
+        return None
+    df["diff"] = df["SMA50"] - df["SMA200"]
+    df["cross"] = (df["diff"].shift(1) < 0) & (df["diff"] > 0)
+    crosses = df[df["cross"]].index
+    if len(crosses) == 0:
+        return None
+    return crosses[-1]
+
+
+def last_buy_signal_date(data: pd.DataFrame):
+    """
+    Datum des letzten kombinierten TA-Kaufsignals.
+    Definition analog compute_ta_signal: Golden Cross ODER (bullisch und RSI kam unter 70).
+    """
+    df = data.dropna(subset=["SMA50", "SMA200", "RSI", "Close"]).copy()
+    if len(df) < 30:
+        return None
+    df["diff"] = df["SMA50"] - df["SMA200"]
+    df["gc"] = (df["diff"].shift(1) < 0) & (df["diff"] > 0)
+    df["bull"] = df["SMA50"] > df["SMA200"]
+    # RSI-Übergang unter 70 während bullischem Trend
+    df["rsi_entry"] = df["bull"] & (df["RSI"] < 70) & (df["RSI"].shift(1) >= 70)
+    df["signal"] = df["gc"] | df["rsi_entry"]
+    hits = df[df["signal"]].index
+    if len(hits) == 0:
+        return None
+    return hits[-1]
+
+
+
+def compute_signal_status(data: pd.DataFrame):
+    """
+    Liefert LONG / FLAT / SHORT inkl. seit-Datum und Performance seit Signal.
+    LONG  = bullischer Trend (SMA50 > SMA200) und kein extremes Overbought
+    SHORT = bärischer Trend
+    FLAT  = unsicher / seitwärts / kein klares Signal
+    """
+    if data.empty or "SMA50" not in data.columns:
+        return {"status": "FLAT", "label": "⚪ FLAT", "since": None, "perf_pct": None, "days": None}
+
+    df = data.dropna(subset=["SMA50", "SMA200", "Close"]).copy()
+    if len(df) < 50:
+        return {"status": "FLAT", "label": "⚪ FLAT", "since": None, "perf_pct": None, "days": None}
+
+    last = df.iloc[-1]
+    bull = bool(last["SMA50"] > last["SMA200"])
+    rsi = float(df["RSI"].iloc[-1]) if "RSI" in df.columns and not pd.isna(df["RSI"].iloc[-1]) else 50.0
+
+    # Finde Beginn des aktuellen Trends (letzter Cross)
+    df["diff"] = df["SMA50"] - df["SMA200"]
+    df["cross_up"] = (df["diff"].shift(1) < 0) & (df["diff"] > 0)
+    df["cross_dn"] = (df["diff"].shift(1) > 0) & (df["diff"] < 0)
+
+    if bull:
+        status = "LONG"
+        label = "🟢 LONG"
+        crosses = df[df["cross_up"]].index
     else:
-        signal_text = "Neutral / Beobachten"
-        signal_farbe = "amber"
+        status = "SHORT"
+        label = "🔴 SHORT"
+        crosses = df[df["cross_dn"]].index
+
+    # Bei extremem RSI eher FLAT (Überkauft/Überverkauft-Warnung)
+    if status == "LONG" and rsi > 75:
+        status, label = "FLAT", "🟡 FLAT"
+    elif status == "SHORT" and rsi < 25:
+        status, label = "FLAT", "🟡 FLAT"
+
+    since = crosses[-1] if len(crosses) else None
+    perf_pct = None
+    days = None
+    if since is not None:
+        entry = float(df.loc[since, "Close"])
+        now = float(last["Close"])
+        if entry > 0:
+            perf_pct = (now / entry - 1) * 100
+        days = (df.index[-1] - since).days
 
     return {
-        "ticker": ticker,
-        "name": stamm["name"],
-        "sektor": stamm["sektor"],
-        "kurs_eur": aktuell,
-        "tages_diff_pct": tages_diff_pct,
-        "sma50_eur": sma50,
-        "sma200_eur": sma200,
-        "rsi": rsi,
-        "macd_hist": macd_hist,
-        "macd_trend": "Steigend" if macd_hist > macd_hist_vortag else "Fallend",
-        "volumen_bestaetigt": volumen_bestaetigt,
-        "hoch_52w_eur": hoch_52w,
-        "tief_52w_eur": tief_52w,
-        "abstand_hoch_pct": abstand_hoch_pct,
-        "stop_loss_eur": stop_loss_eur,
-        "crv": crv,
-        "golden_cross": golden_cross_neu,
-        "ist_trend_follower": ist_trend_follower,
-        "ist_tfa": ist_tfa,
-        "signal_text": signal_text,
-        "signal_farbe": signal_farbe,
-        "earnings_datum": stamm["earnings_datum"],
-        "earnings_warnung": earnings_warnung,
-        "df": df,
+        "status": status,
+        "label": label,
+        "since": since,
+        "perf_pct": round(perf_pct, 1) if perf_pct is not None else None,
+        "days": days,
     }
 
 
-@st.cache_data(ttl=900, show_spinner=False)
-def berechne_markt_sentiment() -> dict:
-    """Berechnet ein verständliches Markt-Sentiment (0 bis 100) aus S&P 500 und VIX."""
-    try:
-        sp = bereinige_dataframe(yf.download("^GSPC", period="1y", interval="1d", progress=False))
-        vix = bereinige_dataframe(yf.download("^VIX", period="3mo", interval="1d", progress=False))
+def compute_sentiment(data: pd.DataFrame) -> dict:
+    """
+    Einfaches Sentiment 0–100 (0=extreme Angst, 100=extreme Gier).
+    Basiert auf RSI + kurzfristigem Momentum.
+    """
+    if data.empty or "RSI" not in data.columns:
+        return {"score": 50, "label": "Neutral", "color": "gray"}
 
-        sp_close = sp["Close"].dropna()
-        sp_aktuell = float(sp_close.iloc[-1])
-        sp_sma200 = float(sp_close.rolling(200).mean().iloc[-1])
-        sp_sma50 = float(sp_close.rolling(50).mean().iloc[-1])
-        vix_aktuell = float(vix["Close"].dropna().iloc[-1])
+    rsi = data["RSI"].dropna()
+    if rsi.empty:
+        return {"score": 50, "label": "Neutral", "color": "gray"}
 
-        punkte = 50
-        if sp_aktuell > sp_sma200:
-            punkte += 15
-        else:
-            punkte -= 15
-        if sp_aktuell > sp_sma50:
-            punkte += 10
-        else:
-            punkte -= 10
+    last_rsi = float(rsi.iloc[-1])
+    # Momentum 20 Tage
+    closes = data["Close"].dropna()
+    mom = 0.0
+    if len(closes) > 20:
+        mom = float(closes.iloc[-1] / closes.iloc[-20] - 1) * 100
 
-        if vix_aktuell < 15:
-            punkte += 20
-        elif vix_aktuell < 20:
-            punkte += 8
-        elif vix_aktuell > 28:
-            punkte -= 25
-        elif vix_aktuell > 22:
-            punkte -= 12
+    # Score: RSI 50% + Momentum skaliert 50%
+    # mom typisch -15..+15 → map auf 0..100
+    mom_score = max(0, min(100, 50 + mom * 2.5))
+    score = 0.6 * last_rsi + 0.4 * mom_score
+    score = int(max(0, min(100, round(score))))
 
-        punkte = int(np.clip(punkte, 5, 95))
-    except Exception:
-        punkte = 55
-        vix_aktuell = 18.0
-
-    if punkte < 25:
-        label = "Extreme Angst (Antizyklische Kaufchancen prüfen)"
-    elif punkte < 45:
-        label = "Vorsicht / Angst (Selektiv vorgehen)"
-    elif punkte < 60:
-        label = "Neutral (Ausgeglichener Markt)"
-    elif punkte < 78:
-        label = "Optimismus / Gier (Aufwärtstrend intakt)"
+    if score >= 75:
+        label, color = "Extreme Gier", "#e74c3c"
+    elif score >= 60:
+        label, color = "Gier", "#e67e22"
+    elif score >= 40:
+        label, color = "Neutral", "#f1c40f"
+    elif score >= 25:
+        label, color = "Angst", "#3498db"
     else:
-        label = "Extreme Gier (Stop-Loss eng nachziehen)"
+        label, color = "Extreme Angst", "#2ecc71"
 
-    return {"punkte": punkte, "label": label, "vix": round(vix_aktuell, 2)}
+    return {"score": score, "label": label, "color": color, "rsi": round(last_rsi, 1)}
 
 
-@st.cache_data(ttl=900, show_spinner=False)
-def lade_krypto_daten() -> pd.DataFrame:
-    """Lädt Euro-Kurse und berechnet 1T-, 7T- und 30T-ETF/ETP-Kapitalflüsse in Mio. €."""
-    zeilen = []
-    for k in KRYPTO_LISTE:
-        df = bereinige_dataframe(yf.download(k["ticker"], period="45d", interval="1d", progress=False))
-        if df.empty or len(df) < 31:
+def compute_zielpfad(data: pd.DataFrame, fundamentals: dict, fx: float = 1.0) -> list:
+    """
+    Zielpfad analog M&T: mehrere Kursziele aus Fib + Analysten.
+    Alle Werte in Chart-Währung (bereits * fx für EUR-Anzeige).
+    """
+    if data.empty:
+        return []
+
+    last = float(data["Close"].iloc[-1]) * fx
+    fib = compute_fib_entry_zone(data)
+    t_low = fundamentals.get("Analysten-Kursziel (niedrig)")
+    t_mean = fundamentals.get("Analysten-Kursziel (mittel)")
+    t_high = fundamentals.get("Analysten-Kursziel (hoch)")
+
+    targets = []
+    # ZIEL 1: nahes Widerstand / Fib-Oberkante oder leicht über Kurs
+    if fib:
+        z1 = max(fib[1] * fx, last * 1.03)
+    else:
+        z1 = last * 1.05
+    targets.append({"name": "ZIEL 1", "kurs": z1, "typ": "nah"})
+
+    # ZIEL 2: Analyst Mean oder +10%
+    if t_mean:
+        z2 = float(t_mean) * fx
+    else:
+        z2 = last * 1.10
+    if z2 <= z1:
+        z2 = z1 * 1.05
+    targets.append({"name": "ZIEL 2", "kurs": z2, "typ": "mittel"})
+
+    # ZIEL 3: zwischen Mean und High
+    if t_high and t_mean:
+        z3 = (float(t_mean) + float(t_high)) / 2 * fx
+    elif t_high:
+        z3 = float(t_high) * fx * 0.92
+    else:
+        z3 = last * 1.18
+    if z3 <= z2:
+        z3 = z2 * 1.06
+    targets.append({"name": "ZIEL 3", "kurs": z3, "typ": "gestreckt"})
+
+    # ZIEL 4 Best Case: Analyst High oder +25%
+    if t_high:
+        z4 = float(t_high) * fx
+    else:
+        z4 = last * 1.25
+    if z4 <= z3:
+        z4 = z3 * 1.08
+    targets.append({"name": "ZIEL 4 · Best Case", "kurs": z4, "typ": "best"})
+
+    # Risiko: unter letztem Swing / -8%
+    risk = last * 0.92
+    if fib:
+        risk = min(risk, fib[0] * fx)
+
+    for t in targets:
+        t["weg_pct"] = (t["kurs"] / last - 1) * 100
+        t["status"] = "erreicht" if last >= t["kurs"] else "aktiv"
+        # grobe Chance-Schätzung (näher = höher)
+        if t["weg_pct"] < 5:
+            t["chance"] = 55
+        elif t["weg_pct"] < 12:
+            t["chance"] = 40
+        elif t["weg_pct"] < 20:
+            t["chance"] = 25
+        else:
+            t["chance"] = 12
+
+    return {"targets": targets, "risk": risk, "risk_pct": (risk / last - 1) * 100, "last": last}
+
+
+# ---------------------------------------------------------------------------
+# Fundamentaldaten
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=3600)
+def load_fundamentals(ticker: str):
+    empty = {
+        "Name": ticker, "Sektor": "—", "Branche": "—", "Kurs": None,
+        "KGV (trailing)": None, "KGV (forward)": None, "KBV": None,
+        "EV/EBITDA": None, "Marktkap.": None, "Umsatzwachstum (YoY)": None,
+        "Gewinnmarge": None, "Operative Marge": None, "ROE": None,
+        "Verschuldung (D/E)": None,
+        "Analysten-Kursziel (mittel)": None,
+        "Analysten-Kursziel (hoch)": None,
+        "Analysten-Kursziel (niedrig)": None,
+        "Empfehlung": None, "Beta": None, "Dividendenrendite": None,
+    }
+    try:
+        info = yf.Ticker(ticker).info or {}
+    except Exception:
+        return empty
+    if not info or (info.get("trailingPegRatio") is None and info.get("regularMarketPrice") is None and not info.get("longName")):
+        # manches liefert leeres dict
+        pass
+    return {
+        "Name": info.get("longName") or info.get("shortName") or ticker,
+        "Sektor": info.get("sector") or "—",
+        "Branche": info.get("industry") or "—",
+        "Kurs": info.get("currentPrice") or info.get("regularMarketPrice"),
+        "KGV (trailing)": info.get("trailingPE"),
+        "KGV (forward)": info.get("forwardPE"),
+        "KBV": info.get("priceToBook"),
+        "EV/EBITDA": info.get("enterpriseToEbitda"),
+        "Marktkap.": info.get("marketCap"),
+        "Umsatzwachstum (YoY)": info.get("revenueGrowth"),
+        "Gewinnmarge": info.get("profitMargins"),
+        "Operative Marge": info.get("operatingMargins"),
+        "ROE": info.get("returnOnEquity"),
+        "Verschuldung (D/E)": info.get("debtToEquity"),
+        "Analysten-Kursziel (mittel)": info.get("targetMeanPrice"),
+        "Analysten-Kursziel (hoch)": info.get("targetHighPrice"),
+        "Analysten-Kursziel (niedrig)": info.get("targetLowPrice"),
+        "Empfehlung": info.get("recommendationKey"),
+        "Beta": info.get("beta"),
+        "Dividendenrendite": info.get("dividendYield"),
+        "Beschreibung": info.get("longBusinessSummary"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Branchenvergleich
+# ---------------------------------------------------------------------------
+SECTOR_BENCHMARKS = {
+    "Technology":               {"KGV": 28, "KBV": 6.0, "EV/EBITDA": 18, "ROE": 0.18, "Marge": 0.18},
+    "Communication Services":   {"KGV": 22, "KBV": 3.5, "EV/EBITDA": 12, "ROE": 0.12, "Marge": 0.15},
+    "Consumer Cyclical":        {"KGV": 20, "KBV": 3.0, "EV/EBITDA": 12, "ROE": 0.15, "Marge": 0.08},
+    "Consumer Defensive":       {"KGV": 22, "KBV": 4.0, "EV/EBITDA": 14, "ROE": 0.18, "Marge": 0.10},
+    "Financial Services":       {"KGV": 12, "KBV": 1.4, "EV/EBITDA": 8,  "ROE": 0.12, "Marge": 0.25},
+    "Healthcare":               {"KGV": 24, "KBV": 4.5, "EV/EBITDA": 15, "ROE": 0.15, "Marge": 0.12},
+    "Industrials":              {"KGV": 18, "KBV": 3.0, "EV/EBITDA": 11, "ROE": 0.14, "Marge": 0.09},
+    "Basic Materials":          {"KGV": 14, "KBV": 1.8, "EV/EBITDA": 8,  "ROE": 0.10, "Marge": 0.08},
+    "Energy":                   {"KGV": 11, "KBV": 1.5, "EV/EBITDA": 6,  "ROE": 0.12, "Marge": 0.10},
+    "Utilities":                {"KGV": 16, "KBV": 1.6, "EV/EBITDA": 10, "ROE": 0.09, "Marge": 0.12},
+    "Real Estate":              {"KGV": 30, "KBV": 1.8, "EV/EBITDA": 16, "ROE": 0.06, "Marge": 0.20},
+}
+
+
+def relative_valuation(fundamentals: dict) -> dict:
+    sector = fundamentals.get("Sektor", "")
+    bench = SECTOR_BENCHMARKS.get(sector)
+    if not bench:
+        return {}
+    result = {}
+    mapping = {
+        "KGV (trailing)": ("KGV", False),
+        "KBV": ("KBV", False),
+        "EV/EBITDA": ("EV/EBITDA", False),
+        "ROE": ("ROE", True),
+        "Operative Marge": ("Marge", True),
+    }
+    for key, (bench_key, higher_better) in mapping.items():
+        val = fundamentals.get(key)
+        bval = bench.get(bench_key)
+        if val is None or bval is None:
+            continue
+        try:
+            diff_pct = (val - bval) / bval * 100
+        except Exception:
+            continue
+        if higher_better:
+            status = "🟢 überdurchschnittlich" if diff_pct > 10 else ("🔴 unterdurchschnittlich" if diff_pct < -10 else "🟡 durchschnittlich")
+        else:
+            status = "🟢 günstig" if diff_pct < -10 else ("🔴 teuer" if diff_pct > 10 else "🟡 fair")
+        result[key] = {"Wert": val, "Branche": bval, "Diff %": diff_pct, "Status": status}
+    return result
+
+
+def valuation_score(rel: dict) -> int:
+    score = 0
+    for info in rel.values():
+        if "günstig" in info["Status"] or "überdurchschnittlich" in info["Status"]:
+            score += 1
+        elif "teuer" in info["Status"] or "unterdurchschnittlich" in info["Status"]:
+            score -= 1
+    return score
+
+
+# ---------------------------------------------------------------------------
+# Scoring-Modelle
+# ---------------------------------------------------------------------------
+def _get_row(df: pd.DataFrame, names):
+    for n in names:
+        if n in df.index:
+            return df.loc[n]
+    return None
+
+
+@st.cache_data(ttl=86400)
+def compute_piotroski_score(ticker: str):
+    details = {}
+    score = 0
+    max_score = 0
+    try:
+        tk = yf.Ticker(ticker)
+        bs = tk.balance_sheet
+        fin = tk.financials
+        cf = tk.cashflow
+        if bs.empty or fin.empty or cf.empty:
+            return None, {}, 0
+        bs = bs.sort_index(axis=1, ascending=False)
+        fin = fin.sort_index(axis=1, ascending=False)
+        cf = cf.sort_index(axis=1, ascending=False)
+
+        net_income = _get_row(fin, ["Net Income"])
+        total_assets = _get_row(bs, ["Total Assets"])
+        cfo = _get_row(cf, ["Operating Cash Flow", "Total Cash From Operating Activities"])
+        lt_debt = _get_row(bs, ["Long Term Debt", "Long Term Debt And Capital Lease Obligation"])
+        curr_assets = _get_row(bs, ["Current Assets", "Total Current Assets"])
+        curr_liab = _get_row(bs, ["Current Liabilities", "Total Current Liabilities"])
+        shares = _get_row(fin, ["Basic Average Shares", "Diluted Average Shares"])
+        revenue = _get_row(fin, ["Total Revenue"])
+        gross_profit = _get_row(fin, ["Gross Profit"])
+
+        def try_criterion(label, fn):
+            nonlocal score, max_score
+            try:
+                result = fn()
+                if result is None:
+                    return
+                max_score += 1
+                if result:
+                    score += 1
+                details[label] = bool(result)
+            except Exception:
+                pass
+
+        if net_income is not None and total_assets is not None and len(net_income) >= 1:
+            try_criterion("Nettogewinn positiv", lambda: net_income.iloc[0] > 0)
+        if cfo is not None and len(cfo) >= 1:
+            try_criterion("Operativer Cashflow positiv", lambda: cfo.iloc[0] > 0)
+        if net_income is not None and total_assets is not None and len(net_income) >= 2:
+            try_criterion("ROA gestiegen",
+                          lambda: (net_income.iloc[0] / total_assets.iloc[0]) > (net_income.iloc[1] / total_assets.iloc[1]))
+        if cfo is not None and net_income is not None:
+            try_criterion("Cashflow > Gewinn", lambda: cfo.iloc[0] > net_income.iloc[0])
+        if lt_debt is not None and total_assets is not None and len(lt_debt) >= 2:
+            try_criterion("Verschuldung gesunken",
+                          lambda: (lt_debt.iloc[0] / total_assets.iloc[0]) < (lt_debt.iloc[1] / total_assets.iloc[1]))
+        if curr_assets is not None and curr_liab is not None and len(curr_assets) >= 2:
+            try_criterion("Current Ratio verbessert",
+                          lambda: (curr_assets.iloc[0] / curr_liab.iloc[0]) > (curr_assets.iloc[1] / curr_liab.iloc[1]))
+        if shares is not None and len(shares) >= 2:
+            try_criterion("Keine Verwässerung", lambda: shares.iloc[0] <= shares.iloc[1])
+        if gross_profit is not None and revenue is not None and len(gross_profit) >= 2:
+            try_criterion("Bruttomarge gestiegen",
+                          lambda: (gross_profit.iloc[0] / revenue.iloc[0]) > (gross_profit.iloc[1] / revenue.iloc[1]))
+        if revenue is not None and total_assets is not None and len(revenue) >= 2:
+            try_criterion("Asset-Turnover gestiegen",
+                          lambda: (revenue.iloc[0] / total_assets.iloc[0]) > (revenue.iloc[1] / total_assets.iloc[1]))
+        return score, details, max_score
+    except Exception:
+        return None, {}, 0
+
+
+@st.cache_data(ttl=3600)
+def compute_levermann_score(ticker: str, six_month_return=None, twelve_month_return=None):
+    try:
+        info = yf.Ticker(ticker).info
+    except Exception:
+        return None, {}
+    score = 0
+    details = {}
+    roe = info.get("returnOnEquity")
+    if roe is not None:
+        pts = 1 if roe > 0.20 else (-1 if roe < 0.10 else 0)
+        score += pts
+        details["ROE"] = f"{roe:.1%} → {pts:+d}"
+    op_margin = info.get("operatingMargins")
+    if op_margin is not None:
+        pts = 1 if op_margin > 0.12 else (-1 if op_margin < 0.06 else 0)
+        score += pts
+        details["Operative Marge"] = f"{op_margin:.1%} → {pts:+d}"
+    dte = info.get("debtToEquity")
+    if dte is not None:
+        pts = 1 if dte < 100 else (-1 if dte > 200 else 0)
+        score += pts
+        details["D/E"] = f"{dte:.0f} → {pts:+d}"
+    rec = info.get("recommendationKey")
+    if rec:
+        pts = 1 if rec in ("buy", "strong_buy") else (-1 if rec in ("sell", "strong_sell") else 0)
+        score += pts
+        details["Analystenmeinung"] = f"{rec} → {pts:+d}"
+    target = info.get("targetMeanPrice")
+    price = info.get("currentPrice") or info.get("regularMarketPrice")
+    if target and price:
+        upside = (target - price) / price
+        pts = 1 if upside > 0.10 else (-1 if upside < -0.10 else 0)
+        score += pts
+        details["Kursziel-Abstand"] = f"{upside:+.1%} → {pts:+d}"
+    if six_month_return is not None:
+        pts = 1 if six_month_return > 0.05 else (-1 if six_month_return < -0.05 else 0)
+        score += pts
+        details["Momentum 6M"] = f"{six_month_return:+.1%} → {pts:+d}"
+    if twelve_month_return is not None:
+        pts = 1 if twelve_month_return > 0.05 else (-1 if twelve_month_return < -0.05 else 0)
+        score += pts
+        details["Momentum 12M"] = f"{twelve_month_return:+.1%} → {pts:+d}"
+    return score, details
+
+
+def price_return(data: pd.DataFrame, trading_days: int):
+    df = data.dropna(subset=["Close"])
+    if len(df) <= trading_days:
+        return None
+    return float(df["Close"].iloc[-1] / df["Close"].iloc[-trading_days] - 1)
+
+
+def compute_composite_score(p_score, p_max, l_score, val_score, ta_signal, r6):
+    score = 50.0
+    if p_score is not None and p_max and p_max > 0:
+        score += (p_score / p_max) * 20 - 10
+    if l_score is not None:
+        score += max(-15, min(15, l_score * 2.5))
+    score += max(-10, min(10, val_score * 3))
+    if r6 is not None:
+        if r6 > 0.15:
+            score += 8
+        elif r6 > 0.05:
+            score += 4
+        elif r6 < -0.15:
+            score -= 8
+        elif r6 < -0.05:
+            score -= 4
+    if "Kaufsignal" in str(ta_signal):
+        score += 7
+    elif "Verkaufssignal" in str(ta_signal):
+        score -= 7
+    return int(max(0, min(100, round(score))))
+
+
+# ---------------------------------------------------------------------------
+# Backtesting
+# ---------------------------------------------------------------------------
+def _find_signal_dates(data: pd.DataFrame, signal_type: str = "golden"):
+    """Findet historische Signal-Zeitpunkte für verschiedene Strategien."""
+    need = ["SMA50", "SMA200", "Close", "RSI"]
+    if signal_type in ("macd", "macd_cross"):
+        need += ["MACD", "MACD_signal"]
+    df = data.dropna(subset=[c for c in need if c in data.columns]).copy()
+    if len(df) < 200:
+        return []
+
+    if signal_type == "golden":
+        df["diff"] = df["SMA50"] - df["SMA200"]
+        df["signal"] = (df["diff"].shift(1) < 0) & (df["diff"] > 0)
+    elif signal_type == "death":
+        df["diff"] = df["SMA50"] - df["SMA200"]
+        df["signal"] = (df["diff"].shift(1) > 0) & (df["diff"] < 0)
+    elif signal_type == "rsi_oversold":
+        # RSI kommt aus dem überverkauften Bereich (<30) zurück über 30
+        df["signal"] = (df["RSI"].shift(1) < 30) & (df["RSI"] >= 30)
+    elif signal_type == "rsi_overbought":
+        df["signal"] = (df["RSI"].shift(1) > 70) & (df["RSI"] <= 70)
+    elif signal_type == "macd":
+        if "MACD" not in df.columns:
+            return []
+        df["signal"] = (df["MACD"].shift(1) < df["MACD_signal"].shift(1)) & (df["MACD"] >= df["MACD_signal"])
+    elif signal_type == "ta":
+        df["diff"] = df["SMA50"] - df["SMA200"]
+        df["gc"] = (df["diff"].shift(1) < 0) & (df["diff"] > 0)
+        df["bull"] = df["SMA50"] > df["SMA200"]
+        df["rsi_entry"] = df["bull"] & (df["RSI"] < 70) & (df["RSI"].shift(1) >= 70)
+        df["signal"] = df["gc"] | df["rsi_entry"]
+        df["signal"] = df["signal"] & ~df["signal"].shift(1).fillna(False)
+    else:
+        return []
+    return df[df["signal"]].index.tolist()
+
+
+def backtest_signals(
+    data: pd.DataFrame,
+    signal_type: str = "golden",
+    forward_days_list=(21, 63, 126),
+    hold_days: int | None = None,
+    stop_loss_pct: float | None = None,
+):
+    """
+    Vertieftes Backtesting:
+    - Fixed-Horizon Returns (1M/3M/6M)
+    - Optional feste Haltedauer (hold_days)
+    - Profit Factor, Avg Win/Loss, Max Consecutive Losses
+    - Equity-Kurve (kumulierte Signal-Returns bei fester Haltedauer)
+    """
+    crosses = _find_signal_dates(data, signal_type)
+    if not crosses:
+        return {"count": 0, "summary": {}, "details": [], "equity": []}
+
+    df = data.dropna(subset=["Close"]).copy()
+    results = []
+    fixed_returns = []  # für Equity bei hold_days
+
+    for dt in crosses:
+        try:
+            entry_price = float(df.loc[dt, "Close"])
+            idx = df.index.get_loc(dt)
+            if isinstance(idx, slice):
+                continue
+        except Exception:
             continue
 
-        close = pd.to_numeric(df["Close"], errors="coerce").dropna()
-        vol = pd.to_numeric(df["Volume"], errors="coerce").fillna(0)
-        kurs_eur = float(close.iloc[-1])
-        diff_1d = ((kurs_eur - float(close.iloc[-2])) / float(close.iloc[-2])) * 100
-        diff_7d = ((kurs_eur - float(close.iloc[-8])) / float(close.iloc[-8])) * 100
+        row = {
+            "Datum": dt.strftime("%Y-%m-%d"),
+            "Einstieg": round(entry_price, 2),
+        }
 
-        ret = close.pct_change().fillna(0)
-        vol_norm = (vol / vol.rolling(20).mean().replace(0, np.nan)).fillna(1.0).clip(0.3, 3.0)
-        taegliche_flows = (ret * 18.0 * vol_norm * (k["etf_basis_m"] / 100.0)).round(1)
-
-        flow_1d = float(taegliche_flows.iloc[-1])
-        flow_7d = float(taegliche_flows.iloc[-7:].sum())
-        flow_30d = float(taegliche_flows.iloc[-30:].sum())
-
-        zeilen.append({
-            "Kryptowährung": f"{k['name']} ({k['symbol']})",
-            "Kurs (€)": kurs_eur,
-            "24h (%)": round(diff_1d, 2),
-            "7 Tage (%)": round(diff_7d, 2),
-            "ETF-Flow Heute (Mio. €)": round(flow_1d, 1),
-            "ETF-Flow 7 Tage (Mio. €)": round(flow_7d, 1),
-            "ETF-Flow 30 Tage (Mio. €)": round(flow_30d, 1),
-            "Trend-Fazit": "Zuflüsse überwiegen" if flow_7d > 0 else "Abflüsse überwiegen",
-        })
-    return pd.DataFrame(zeilen)
-
-
-def lade_watchlist_datei() -> list:
-    """Lädt die Watchlist aus watchlist.json, falls im Repository vorhanden."""
-    if os.path.exists("watchlist.json"):
-        try:
-            with open("watchlist.json", "r", encoding="utf-8") as f:
-                daten = json.load(f)
-                if isinstance(daten, list) and len(daten) > 0:
-                    return daten
-        except Exception:
-            pass
-    return STANDARD_WATCHLIST
-
-
-# ==============================================================================
-# SESSION STATE INITIALISIERUNG
-# ==============================================================================
-if "ausgewaehlter_ticker" not in st.session_state:
-    st.session_state["ausgewaehlter_ticker"] = "NVDA"
-
-if "watchlist" not in st.session_state:
-    st.session_state["watchlist"] = lade_watchlist_datei()
-
-# ==============================================================================
-# SEITENLEISTE (Navigation & Schnellhilfe)
-# ==============================================================================
-with st.sidebar:
-    st.title("📈 Börsen-Cockpit (€)")
-    st.caption("Alle Kurse automatisch in Euro (€) • Verständliche Klartext-Signale")
-
-    bereich = st.radio(
-        "Bereich wählen:",
-        [
-            "1. Markt-Überblick & Stimmung",
-            "2. Trend- & Turnaround-Scanner",
-            "3. Einzelaktien-Analyse (€)",
-            "4. Meine Watchlist & Depot (€)",
-            "5. Krypto-ETFs & Kapitalflüsse",
-        ],
-    )
-
-    st.divider()
-    if st.button("🔄 Kurse jetzt aktualisieren"):
-        st.cache_data.clear()
-        st.rerun()
-
-    with st.expander("ℹ️ Kurze Erklärung der Begriffe"):
-        st.markdown(
-            """
-            * **SMA 50 / SMA 200:** Durchschnittskurs der letzten 50 bzw. 200 Handelstage. Liegt der Kurs darüber, ist der Trend positiv.
-            * **Golden Cross:** Die 50-Tage-Linie kreuzt die 200-Tage-Linie nach oben – ein klassisches Kaufsignal.
-            * **RSI (14):** Misst, ob eine Aktie überkauft (> 70) oder überverkauft (< 30) ist.
-            * **TFA (Turnaround-Formel):** Stark gefallene Aktien (mind. 35 % unter Hoch), die gerade einen Boden bilden.
-            * **CRV (Chance-Risiko-Verhältnis):** Wie viel Gewinn bis zum Jahreshoch möglich ist im Vergleich zum Stop-Loss-Risiko (ab 2,0 : 1 attraktiv).
-            """
-        )
-
-# ==============================================================================
-# BEREICH 1: MARKT-ÜBERBLICK & SENTIMENT-TACHOMETER
-# ==============================================================================
-if bereich == "1. Markt-Überblick & Stimmung":
-    st.header("🧭 Markt-Überblick & Stimmungs-Tachometer")
-    st.write("Wie ist die aktuelle Großwetterlage an den Börsen? Alle Werte werden live berechnet.")
-
-    sentiment = berechne_markt_sentiment()
-
-    col_gauge, col_info = st.columns([1.2, 1])
-    with col_gauge:
-        fig_gauge = go.Figure(
-            go.Indicator(
-                mode="gauge+number",
-                value=sentiment["punkte"],
-                title={"text": "Markt-Stimmung (0 = Angst, 100 = Gier)", "font": {"size": 18, "color": "#E6EDF3"}},
-                number={"font": {"size": 44, "color": "#E6EDF3"}},
-                gauge={
-                    "axis": {"range": [0, 100], "tickcolor": "#E6EDF3"},
-                    "bar": {"color": "#58A6FF"},
-                    "bgcolor": "#161B22",
-                    "steps": [
-                        {"range": [0, 25], "color": "#B71C1C"},
-                        {"range": [25, 45], "color": "#E65100"},
-                        {"range": [45, 60], "color": "#37474F"},
-                        {"range": [60, 78], "color": "#2E7D32"},
-                        {"range": [78, 100], "color": "#00C853"},
-                    ],
-                },
-            )
-        )
-        fig_gauge.update_layout(
-            paper_bgcolor="#0E1117",
-            font={"color": "#E6EDF3"},
-            height=300,
-            margin=dict(l=20, r=20, t=50, b=20),
-        )
-        st.plotly_chart(fig_gauge, use_container_width=True)
-
-    with col_info:
-        st.subheader("Aktuelle Einschätzung")
-        st.markdown(f"<div class='metric-card'><h4>{sentiment['label']}</h4><p>Angst-Barometer (VIX): <b>{sentiment['vix']}</b> (Unter 20 bedeutet ruhiges Fahrwasser)</p></div>", unsafe_allow_html=True)
-        st.markdown(
-            """
-            <div class='info-box'>
-            <b>Was bedeutet das für deine Käufe?</b><br>
-            • Bei <b>Angst (unter 40)</b> lohnen sich Turnaround-Kandidaten (TFA-Scanner).<br>
-            • Bei <b>Optimismus (55–75)</b> laufen Trend-Follower am besten.<br>
-            • Bei <b>Extremer Gier (über 80)</b> keine Kurse jagen, sondern Stop-Loss-Marken prüfen.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    st.subheader("Schnell-Check der Leitindizes")
-    indizes = [
-        ("DAX (Deutschland)", "^GDAXI"),
-        ("S&P 500 (USA)", "^GSPC"),
-        ("NASDAQ 100 (US-Tech)", "^NDX"),
-        ("EURO STOXX 50", "^STOXX50E"),
-    ]
-    idx_cols = st.columns(4)
-    for col, (iname, iticker) in zip(idx_cols, indizes):
-        with col:
-            idf = bereinige_dataframe(yf.download(iticker, period="5d", interval="1d", progress=False))
-            if not idf.empty and len(idf) >= 2:
-                wert = float(idf["Close"].iloc[-1])
-                diff = ((wert - float(idf["Close"].iloc[-2])) / float(idf["Close"].iloc[-2])) * 100
-                st.metric(iname, f"{wert:,.0f} Pkt.", f"{diff:+.2f} %")
+        # Fixed-horizon returns
+        for days in forward_days_list:
+            future_idx = idx + days
+            if future_idx < len(df):
+                future_price = float(df.iloc[future_idx]["Close"])
+                ret = (future_price / entry_price - 1) * 100
+                row[f"Rendite {days}T"] = round(ret, 2)
             else:
-                st.metric(iname, "Lädt...", "0.00 %")
+                row[f"Rendite {days}T"] = None
 
-# ==============================================================================
-# BEREICH 2: TREND-FOLLOWER & TFA-SCANNER (TURNAROUND-FORMEL)
-# ==============================================================================
-elif bereich == "2. Trend- & Turnaround-Scanner":
-    st.header("🔍 Aktien-Scanner: Trend-Follower & Turnaround-Formel (TFA)")
+        # Max DD in den nächsten 126 Tagen
+        end_idx = min(idx + 126, len(df) - 1)
+        window = df.iloc[idx:end_idx + 1]["Close"]
+        if len(window) > 1:
+            peak = window.cummax()
+            dd = float(((window - peak) / peak * 100).min())
+            row["Max DD 6M"] = round(dd, 2)
+        else:
+            row["Max DD 6M"] = None
 
-    col_u, col_m = st.columns([1.5, 1.5])
-    with col_u:
-        universum_name = st.selectbox("Aktien-Liste auswählen:", list(INDEX_UNIVERSEN.keys()))
-    with col_m:
-        scanner_modus = st.radio(
-            "Strategie-Filter:",
-            [
-                "Alle Aktien anzeigen",
-                "Nur Trend-Follower (Aufwärtstrend)",
-                "Nur TFA-Signale (Turnaround-Chancen)",
-            ],
-            horizontal=True,
+        # Feste Haltedauer (für Equity-Kurve) + optional Stop-Loss
+        hd = hold_days or 63
+        exit_idx = idx + hd
+        if exit_idx < len(df):
+            window = df.iloc[idx:exit_idx + 1]
+            exit_price = float(window.iloc[-1]["Close"])
+            stopped = False
+            if stop_loss_pct is not None and stop_loss_pct > 0:
+                stop_level = entry_price * (1 - stop_loss_pct / 100.0)
+                # erstes Tief unter Stop
+                for _, bar in window.iloc[1:].iterrows():
+                    if float(bar["Low"]) <= stop_level:
+                        exit_price = stop_level
+                        stopped = True
+                        break
+            hold_ret = (exit_price / entry_price - 1) * 100
+            row[f"Hold {hd}T"] = round(hold_ret, 2)
+            row["Stop"] = "ja" if stopped else "nein"
+            fixed_returns.append(hold_ret)
+        else:
+            row[f"Hold {hd}T"] = None
+            row["Stop"] = "—"
+
+        results.append(row)
+
+    # --- Summary-Statistiken ---
+    summary = {"count": len(results)}
+    for days in forward_days_list:
+        col = f"Rendite {days}T"
+        vals = [r[col] for r in results if r[col] is not None]
+        if vals:
+            wins = [v for v in vals if v > 0]
+            losses = [v for v in vals if v <= 0]
+            summary[f"Ø {days}T"] = round(float(np.mean(vals)), 2)
+            summary[f"Median {days}T"] = round(float(np.median(vals)), 2)
+            summary[f"Trefferquote {days}T"] = round(len(wins) / len(vals) * 100, 1)
+            summary[f"Best {days}T"] = round(float(np.max(vals)), 2)
+            summary[f"Worst {days}T"] = round(float(np.min(vals)), 2)
+            if wins:
+                summary[f"Ø Win {days}T"] = round(float(np.mean(wins)), 2)
+            if losses:
+                summary[f"Ø Loss {days}T"] = round(float(np.mean(losses)), 2)
+            # Profit Factor
+            gross_win = sum(wins) if wins else 0
+            gross_loss = abs(sum(losses)) if losses else 0
+            summary[f"PF {days}T"] = round(gross_win / gross_loss, 2) if gross_loss > 0 else None
+        else:
+            for k in (f"Ø {days}T", f"Median {days}T", f"Trefferquote {days}T",
+                      f"Best {days}T", f"Worst {days}T", f"PF {days}T"):
+                summary[k] = None
+
+    # Consecutive losses (auf 63T-Horizont)
+    vals_63 = [r.get("Rendite 63T") for r in results if r.get("Rendite 63T") is not None]
+    max_consec_loss = 0
+    cur = 0
+    for v in vals_63:
+        if v <= 0:
+            cur += 1
+            max_consec_loss = max(max_consec_loss, cur)
+        else:
+            cur = 0
+    summary["max_consec_loss"] = max_consec_loss
+
+    # Equity-Kurve (kumuliert, feste Haltedauer)
+    equity = []
+    cum = 0.0
+    for i, r in enumerate(fixed_returns):
+        cum += r
+        equity.append({"Signal #": i + 1, "Trade %": round(r, 2), "Kumuliert %": round(cum, 2)})
+
+    summary["equity_final"] = round(cum, 2) if fixed_returns else None
+    summary["hold_days"] = hold_days or 63
+
+    return {"count": len(results), "summary": summary, "details": results, "equity": equity, "signal_dates": crosses}
+
+
+# ---------------------------------------------------------------------------
+# UI
+# ---------------------------------------------------------------------------
+st.sidebar.title("⚙️ Navigation")
+modes = ["📊 Einzelanalyse", "🌍 Index-Scanner", "🔍 Scanner", "🪙 Krypto ETF Flows", "📉 Backtesting", "📰 News-Feed", "💰 Sparplan-Rechner", "📅 Saisonalität", "🗺️ Sektor-Heatmap", "💸 Dividenden-Kalender"]
+
+if "navigation_mode" not in st.session_state:
+    st.session_state["navigation_mode"] = "📊 Einzelanalyse"
+
+# Zwingende Synchronisation vor dem Radio-Widget:
+st.session_state["nav_radio"] = st.session_state["navigation_mode"]
+
+def on_nav_change():
+    st.session_state["navigation_mode"] = st.session_state["nav_radio"]
+
+mode = st.sidebar.radio(
+    "Ansicht",
+    modes,
+    key="nav_radio",
+    on_change=on_nav_change,
+)
+
+st.sidebar.markdown("##### So nutzen")
+st.sidebar.caption(
+    "1. Scanner → Kandidaten finden\n"
+    "2. Einzelanalyse → Chart, Scores, Sentiment\n"
+    "3. Backtesting → Signal prüfen\n"
+    "4. Portfolio → Positionen tracken\n\n"
+    "📱 Chart: „Einfach“ + Zeit-Slider"
+)
+
+# ===========================================================================
+# 1. Einzelanalyse
+# ===========================================================================
+if mode == "📊 Einzelanalyse":
+    st.title("📊 Aktien-Einzelanalyse")
+    col1, col2 = st.columns([2, 1])
+    # Trennung von Widget-Key und internem Zustand für robusteren Seitenwechsel
+    default_ticker = st.session_state.get("target_ticker", "Apple")
+    
+    with col1:
+        # Kein "key" verwenden, sondern nur "value", das erlaubt das saubere Überschreiben von außen!
+        user_input = st.text_input("Firmenname oder Ticker", value=default_ticker)
+    with col2:
+        period = st.selectbox("Zeitraum", ["1y", "2y", "5y", "10y"], index=1)
+    ticker = resolve_ticker(user_input) if user_input else ""
+    if ticker and ticker.upper() != user_input.upper().strip():
+        st.caption(f"→ Interpretiert als: **{ticker}**")
+    if ticker:
+        data = load_price_history(ticker, period)
+        if data.empty:
+            st.error(
+                "Keine Kursdaten gefunden. Ticker prüfen "
+                "(Beispiel: NVDA, SAP.DE, BTC-USD, Gold, 1810.HK)."
+            )
+            st.caption("Tipp: Manche Asien-Titel brauchen die Börsen-Endung .HK / .T / .KS")
+        else:
+            fundamentals = load_fundamentals(ticker)
+            bullish = is_bullish_now(data)
+            golden = detect_golden_cross(data)
+            ta_signal = compute_ta_signal(data)
+            vol, max_dd = compute_risk_metrics(data)
+            r6 = price_return(data, 126)
+            r12 = price_return(data, 252)
+
+            # Währung & EUR-Umrechnung (USD, GBP, CHF, JPY, HKD, …)
+            currency = detect_currency(ticker, fundamentals)
+            rates = get_fx_rates()
+            eur_usd = rates.get("USD", 1.08)
+            rate = rates.get(currency, 1.0)
+            # Multiplikator: Original -> EUR
+            fx = (1.0 / rate) if (currency != "EUR" and rate and rate > 0) else 1.0
+            last_price = float(data["Close"].iloc[-1])
+            last_price_eur = last_price * fx
+            symbols = {"USD": "$", "GBP": "£", "CHF": "CHF", "JPY": "¥", "HKD": "HK$", "KRW": "₩", "TWD": "NT$"}
+            if currency == "EUR":
+                price_eur_str = f"{last_price:.2f} €"
+                price_sub = "Originalwährung EUR"
+            else:
+                sym = symbols.get(currency, currency)
+                price_eur_str = f"{last_price_eur:.2f} €"
+                price_sub = f"Original: {last_price:.2f} {sym}"
+
+            # Chart-Daten in EUR umrechnen (nur Preisachsen, RSI/MACD bleiben unverändert)
+            plot = data.copy()
+            for col in ("Open", "High", "Low", "Close", "SMA50", "SMA200"):
+                if col in plot.columns:
+                    plot[col] = plot[col] * fx
+
+            # Letzte Signal-Daten
+            gc_date = last_golden_cross_date(data)
+            buy_date = last_buy_signal_date(data)
+            gc_date_str = gc_date.strftime("%d.%m.%Y") if gc_date is not None else "—"
+            buy_date_str = buy_date.strftime("%d.%m.%Y") if buy_date is not None else "—"
+
+            sig = compute_signal_status(data)
+            sent = compute_sentiment(data)
+
+            # Vollständiger Firmenname & Beschreibung
+            comp_name = fundamentals.get("Name", ticker)
+            st.markdown(f"### 🏢 {comp_name} (`{ticker}`)")
+            desc = fundamentals.get("Beschreibung")
+            if desc:
+                with st.expander("📖 Unternehmensbeschreibung anzeigen", expanded=False):
+                    st.write(desc)
+                    st.caption("Quelle: Yahoo Finance (Originalfassung)")
+
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("Kurs", price_eur_str, price_sub)
+            c2.metric("System-Status", sig["label"])
+            c3.metric("Golden Cross", "✅ Ja" if golden else "—")
+            c4.metric("TA-Signal", ta_signal)
+            c5.metric("Sektor", str(fundamentals.get("Sektor", "—"))[:18])
+
+            # Signal-Box (ähnlich M&T)
+            st.markdown("#### 📡 System-Signal")
+            b1, b2, b3, b4 = st.columns(4)
+            b1.metric("Status", sig["label"])
+            if sig["since"] is not None:
+                b2.metric("Seit", sig["since"].strftime("%d.%m.%Y"))
+            else:
+                b2.metric("Seit", "—")
+            b3.metric("Performance seit Signal",
+                      f"{sig['perf_pct']:+.1f} %" if sig["perf_pct"] is not None else "—")
+            b4.metric("Haltedauer", f"{sig['days']} Tage" if sig["days"] is not None else "—")
+
+            # Visueller Stimmungs-Tacho (analog Index-Scanner)
+            st.markdown("#### 🌡️ Markt-Sentiment (Tachometer)")
+            score = sent["score"]
+            
+            fig_tacho = go.Figure(go.Indicator(
+                mode="gauge+number",
+                value=score,
+                domain={'x': [0, 1], 'y': [0, 1]},
+                title={'text': f"STIMMUNG: {sent['label'].upper()}", 'font': {'size': 16, 'color': '#cdd6f4', 'family': 'Arial Black'}},
+                gauge={
+                    'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "white", 'tickvals': [0, 25, 45, 55, 75, 100]},
+                    'bar': {'color': "rgba(44, 62, 80, 0.9)", 'thickness': 0.15},
+                    'bgcolor': "#313244",
+                    'borderwidth': 0,
+                    'steps': [
+                        {'range': [0, 25], 'color': '#e74c3c'},
+                        {'range': [25, 45], 'color': '#f39c12'},
+                        {'range': [45, 55], 'color': '#bdc3c7'},
+                        {'range': [55, 75], 'color': '#2ecc71'},
+                        {'range': [75, 100], 'color': '#27ae60'}
+                    ],
+                }
+            ))
+            fig_tacho.update_layout(
+                height=280,
+                margin=dict(l=20, r=20, t=40, b=10),
+                paper_bgcolor="rgba(0,0,0,0)",
+                font={'color': "#cdd6f4"}
+            )
+            fig_tacho.add_annotation(x=0.12, y=0.35, text="Extreme<br>Angst", showarrow=False, font=dict(color="white", size=10))
+            fig_tacho.add_annotation(x=0.25, y=0.7, text="Angst", showarrow=False, font=dict(color="white", size=11))
+            fig_tacho.add_annotation(x=0.5, y=0.9, text="Neutral", showarrow=False, font=dict(color="black", size=11))
+            fig_tacho.add_annotation(x=0.75, y=0.7, text="Gier", showarrow=False, font=dict(color="white", size=11))
+            fig_tacho.add_annotation(x=0.88, y=0.35, text="Extreme<br>Gier", showarrow=False, font=dict(color="white", size=10))
+            
+            st.plotly_chart(fig_tacho, use_container_width=True, config=PLOTLY_CONFIG)
+            st.caption(f"RSI: {sent.get('rsi', '—')} · Basiert auf RSI (14) & kurzfristigem Momentum.")
+
+            # Signal-Historie
+            sc1, sc2, sc3 = st.columns(3)
+            sc1.metric("Letztes Golden Cross", gc_date_str)
+            sc2.metric("Letztes Kaufsignal", buy_date_str)
+            sc3.metric("Währung (Original)", currency)
+
+            chart_title = f"{ticker} · Kurs in €"
+            if currency != "EUR":
+                chart_title += f" ({currency}→€)"
+
+            st.markdown("#### 📈 Chart")
+            # Mobile-freundliche Steuerung: große Schnell-Zeiträume statt fummeliger Navigation
+            cc1, cc2, cc3 = st.columns(3)
+            with cc1:
+                chart_big = st.checkbox("Vollbild", value=False, help="Sehr hohe Chart-Ansicht")
+            with cc2:
+                mobile_simple = st.checkbox(
+                    "Einfach (Handy)", value=True,
+                    help="Kompakter Kurs-Chart; RSI/MACD ausblenden"
+                )
+            with cc3:
+                show_slider = st.checkbox(
+                    "Zeit-Slider", value=False,
+                    help="Optional: feine Auswahl des Zeitfensters per Slider"
+                )
+
+            chart_window = st.radio(
+                "Schnell-Zoom",
+                ["1M", "3M", "6M", "1J", "2J", "Max"],
+                index=2,
+                horizontal=True,
+                help="Tippen statt mit zwei Fingern lange zu zoomen.",
+            )
+
+            mc1, mc2 = st.columns(2)
+            with mc1:
+                show_buy_marks = st.checkbox("Kaufsignale anzeigen", value=True)
+            with mc2:
+                show_gc_marks = st.checkbox("Golden Cross anzeigen", value=True)
+
+            chart_height = 1050 if chart_big else (560 if mobile_simple else 780)
+
+            if mobile_simple:
+                fig = go.Figure()
+                fig.add_trace(go.Candlestick(
+                    x=plot.index, open=plot["Open"], high=plot["High"],
+                    low=plot["Low"], close=plot["Close"], name="Kurs €",
+                    increasing_line_color="#26a69a", increasing_fillcolor="#26a69a",
+                    decreasing_line_color="#ef5350", decreasing_fillcolor="#ef5350",
+                ))
+                if "SMA50" in plot.columns:
+                    fig.add_trace(go.Scatter(
+                        x=plot.index, y=plot["SMA50"], name="SMA50",
+                        line=dict(color="#ffb74d", width=2.2),
+                    ))
+                if "SMA200" in plot.columns:
+                    fig.add_trace(go.Scatter(
+                        x=plot.index, y=plot["SMA200"], name="SMA200",
+                        line=dict(color="#42a5f5", width=2.2),
+                    ))
+            else:
+                fig = make_subplots(
+                    rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05,
+                    row_heights=[0.58, 0.18, 0.24],
+                    subplot_titles=(chart_title, "RSI (14)", "MACD"),
+                )
+                fig.add_trace(go.Candlestick(
+                    x=plot.index, open=plot["Open"], high=plot["High"],
+                    low=plot["Low"], close=plot["Close"], name="Kurs €",
+                    increasing_line_color="#26a69a", increasing_fillcolor="#26a69a",
+                    decreasing_line_color="#ef5350", decreasing_fillcolor="#ef5350",
+                ), row=1, col=1)
+                fig.add_trace(go.Scatter(
+                    x=plot.index, y=plot["SMA50"], name="SMA50",
+                    line=dict(color="#ffb74d", width=2),
+                ), row=1, col=1)
+                fig.add_trace(go.Scatter(
+                    x=plot.index, y=plot["SMA200"], name="SMA200",
+                    line=dict(color="#42a5f5", width=2),
+                ), row=1, col=1)
+
+            def _add_markers(fig_obj, row=None):
+                kwargs = {"row": row, "col": 1} if row else {}
+                if show_buy_marks:
+                    buy_dates = _find_signal_dates(data, "ta")
+                    bx, by = [], []
+                    for d in buy_dates:
+                        if d in plot.index:
+                            bx.append(d)
+                            by.append(float(plot.loc[d, "Close"]))
+                    if bx:
+                        fig_obj.add_trace(go.Scatter(
+                            x=bx, y=by, mode="markers", name="Kaufsignal",
+                            marker=dict(symbol="triangle-up", size=14, color="#00e676",
+                                        line=dict(width=1.5, color="#2c3e50")),
+                            hovertemplate="Kaufsignal<br>%{x|%d.%m.%Y}<br>%{y:.2f} €<extra></extra>",
+                        ), **kwargs)
+                if show_gc_marks:
+                    gc_dates = _find_signal_dates(data, "golden")
+                    gx, gy = [], []
+                    for d in gc_dates:
+                        if d in plot.index:
+                            gx.append(d)
+                            gy.append(float(plot.loc[d, "Close"]))
+                    if gx:
+                        fig_obj.add_trace(go.Scatter(
+                            x=gx, y=gy, mode="markers", name="Golden Cross",
+                            marker=dict(symbol="star", size=15, color="#ffd600",
+                                        line=dict(width=1, color="#333")),
+                            hovertemplate="Golden Cross<br>%{x|%d.%m.%Y}<br>%{y:.2f} €<extra></extra>",
+                        ), **kwargs)
+
+            if mobile_simple:
+                _add_markers(fig)
+                for key, color, label in [
+                    ("Analysten-Kursziel (niedrig)", "#2ca02c", "Min"),
+                    ("Analysten-Kursziel (mittel)", "#1f77b4", "Normal"),
+                    ("Analysten-Kursziel (hoch)", "#d62728", "Max"),
+                ]:
+                    val = fundamentals.get(key)
+                    if val:
+                        fig.add_hline(y=float(val) * fx, line_dash="dash", line_color=color,
+                                      annotation_text=f"{label} {float(val)*fx:.1f} €")
+                entry_zones = compute_entry_zones(data, fx=fx)
+                zone_fills = [
+                    "rgba(38,166,154,0.10)",
+                    "rgba(255,183,77,0.10)",
+                    "rgba(66,165,245,0.10)",
+                ]
+                for z, fill in zip(entry_zones, zone_fills):
+                    fig.add_hrect(
+                        y0=z["low"], y1=z["high"],
+                        fillcolor=fill, line_width=0,
+                        annotation_text=f"{z['name']} {z['low']:.2f}–{z['high']:.2f} €",
+                        annotation_position="top left",
+                        annotation_font_size=10,
+                    )
+            else:
+                _add_markers(fig, row=1)
+                for key, color, label in [
+                    ("Analysten-Kursziel (niedrig)", "#2ca02c", "Min"),
+                    ("Analysten-Kursziel (mittel)", "#1f77b4", "Normal"),
+                    ("Analysten-Kursziel (hoch)", "#d62728", "Max"),
+                ]:
+                    val = fundamentals.get(key)
+                    if val:
+                        fig.add_hline(y=float(val)*fx, line_dash="dash", line_color=color,
+                                      annotation_text=f"{label} {float(val)*fx:.1f} €",
+                                      annotation_font_size=11, row=1, col=1)
+                entry_zones = compute_entry_zones(data, fx=fx)
+                zone_fills = [
+                    "rgba(38,166,154,0.10)",
+                    "rgba(255,183,77,0.10)",
+                    "rgba(66,165,245,0.10)",
+                ]
+                for z, fill in zip(entry_zones, zone_fills):
+                    fig.add_hrect(
+                        y0=z["low"], y1=z["high"], fillcolor=fill,
+                        line_width=0, row=1, col=1,
+                        annotation_text=f"{z['name']} {z['low']:.2f}–{z['high']:.2f} €",
+                        annotation_position="top left",
+                        annotation_font_size=10,
+                    )
+                fig.add_trace(go.Scatter(x=data.index, y=data["RSI"], name="RSI",
+                                         line=dict(color="#ce93d8", width=1.8)), row=2, col=1)
+                fig.add_hline(y=70, line_dash="dot", line_color="rgba(239,83,80,0.7)", row=2, col=1)
+                fig.add_hline(y=30, line_dash="dot", line_color="rgba(38,166,154,0.7)", row=2, col=1)
+                fig.add_hline(y=50, line_dash="dot", line_color="rgba(255,255,255,0.2)", row=2, col=1)
+                fig.add_trace(go.Scatter(x=data.index, y=data["MACD"], name="MACD",
+                                         line=dict(color="#64b5f6", width=1.6)), row=3, col=1)
+                fig.add_trace(go.Scatter(x=data.index, y=data["MACD_signal"], name="Signal",
+                                         line=dict(color="#ffb74d", width=1.6)), row=3, col=1)
+                colors = ["#26a69a" if v >= 0 else "#ef5350" for v in data["MACD_hist"].fillna(0)]
+                fig.add_trace(go.Bar(x=data.index, y=data["MACD_hist"], name="Hist",
+                                     marker_color=colors, opacity=0.75), row=3, col=1)
+
+            layout_extra = dict(
+                **CHART_LAYOUT,
+                height=chart_height,
+                title=dict(text=chart_title if mobile_simple else None, font=dict(size=16)),
+                yaxis_title="Kurs €",
+            )
+            fig.update_layout(
+                **layout_extra,
+                uirevision=f"{ticker}-{chart_window}-{int(mobile_simple)}",
+            )
+
+            # Schneller Zeit-Zoom. Das ist auf Smartphones deutlich einfacher
+            # als ausschließlich mit dem Range-Slider zu arbeiten.
+            end_date = plot.index[-1]
+            offsets = {
+                "1M": pd.DateOffset(months=1),
+                "3M": pd.DateOffset(months=3),
+                "6M": pd.DateOffset(months=6),
+                "1J": pd.DateOffset(years=1),
+                "2J": pd.DateOffset(years=2),
+            }
+            if chart_window == "Max":
+                chart_start = plot.index[0]
+            else:
+                chart_start = max(plot.index[0], end_date - offsets[chart_window])
+            fig.update_xaxes(range=[chart_start, end_date])
+
+            # Range-Slider: optional, damit der Chart auf kleinen Displays
+            # standardmäßig mehr Platz für die Kursdaten hat.
+            slider_thickness = 0.08 if mobile_simple else 0.07
+            if mobile_simple:
+                fig.update_xaxes(
+                    rangeslider=dict(visible=show_slider, thickness=slider_thickness),
+                    fixedrange=False,
+                    showgrid=True, gridcolor="rgba(255,255,255,0.1)",
+                )
+                fig.update_yaxes(fixedrange=False, side="right")
+            else:
+                fig.update_xaxes(fixedrange=False, showgrid=True, gridcolor="rgba(255,255,255,0.1)")
+                fig.update_xaxes(
+                    rangeslider=dict(visible=show_slider, thickness=slider_thickness),
+                    row=3, col=1,
+                )
+                fig.update_yaxes(fixedrange=False)
+                fig.update_layout(
+                    yaxis2=dict(showgrid=True, gridcolor="rgba(255,255,255,0.1)",
+                                fixedrange=False, title="RSI", range=[0, 100]),
+                    yaxis3=dict(showgrid=True, gridcolor="rgba(255,255,255,0.1)",
+                                fixedrange=False, title="MACD"),
+                )
+
+            st.plotly_chart(
+                fig,
+                use_container_width=True,
+                config=PLOTLY_CONFIG,
+                key=f"ch_{ticker}_{int(chart_big)}_{int(mobile_simple)}_{int(show_slider)}",
+            )
+            st.info(
+                "📱 **Handy:** Zeitraum oben antippen (1M/3M/6M/1J/2J) · "
+                "mit einem Finger schieben · mit zwei Fingern zoomen · "
+                "oben rechts +/− für Feintuning · 🟢 Kaufsignal · ⭐ Golden Cross"
+            )
+
+            # ---- Drei Kauf-Einstiegszonen ----
+            entry_zones = compute_entry_zones(data, fx=fx)
+            if entry_zones:
+                st.markdown("#### 🎯 3 Kauf-Einstiegszonen bei Rücksetzern")
+                ecols = st.columns(3)
+                for i, z in enumerate(entry_zones):
+                    with ecols[i]:
+                        position = "unter aktuellem Kurs" if z["unter_kurs"] else "über aktuellem Kurs"
+                        st.metric(
+                            z["name"],
+                            f"{z['low']:.2f} – {z['high']:.2f} €",
+                            f"{z['distanz_pct']:+.1f}% · {position}",
+                        )
+                        st.caption(z["typ"])
+                st.caption(
+                    "Technische Rücksetzer-Zonen aus dem 12-Monats-Swing (Fibonacci 23,6–61,8 %). "
+                    "Sie sind Orientierungsbereiche und keine Garantie für eine Trendwende."
+                )
+
+            # ---- Zielpfad ----
+            zp = compute_zielpfad(data, fundamentals, fx=fx)
+            if zp and zp.get("targets"):
+                st.markdown("#### 🎯 Zielpfad")
+                zcols = st.columns(len(zp["targets"]) + 1)
+                for i, t in enumerate(zp["targets"]):
+                    with zcols[i]:
+                        status_icon = "✅" if t["status"] == "erreicht" else "▶️"
+                        st.metric(
+                            f"{status_icon} {t['name']}",
+                            f"{t['kurs']:.2f} €",
+                            f"{t['weg_pct']:+.1f}% · Chance ~{t['chance']}%",
+                        )
+                with zcols[-1]:
+                    st.metric("⚠️ Risiko", f"{zp['risk']:.2f} €", f"{zp['risk_pct']:+.1f}%")
+                st.caption("Ziele aus Fibonacci-Retracements + Analysten-Kurszielen abgeleitet. Keine Garantie.")
+
+            st.subheader("⚠️ Risiko")
+            rc1, rc2, rc3, rc4 = st.columns(4)
+            beta = fundamentals.get("Beta")
+            rc1.metric("Beta", f"{beta:.2f}" if beta else "—")
+            rc2.metric("Volatilität (ann.)", f"{vol} %" if vol is not None else "—")
+            rc3.metric("Max Drawdown", f"{max_dd} %" if max_dd is not None else "—")
+            mom_txt = "—"
+            if r6 is not None and r12 is not None:
+                mom_txt = f"{r6*100:+.1f}% / {r12*100:+.1f}%"
+            rc4.metric("Momentum 6M / 12M", mom_txt)
+
+            corr_info = compute_market_correlation(ticker)
+            div_info = load_dividend_summary(ticker)
+            x1, x2, x3 = st.columns(3)
+            if corr_info.get("corr") is not None:
+                x1.metric(f"Korrelation ({corr_info['bench']})", f"{corr_info['corr']:.2f}")
+            else:
+                x1.metric("Korrelation", "—")
+            if div_info.get("yield") is not None:
+                x2.metric("Div.-Rendite", f"{float(div_info['yield'])*100:.2f} %")
+            else:
+                x2.metric("Div.-Rendite", "—")
+            x3.metric("Div.-Zahlungen (3J)", str(div_info.get("count_3y") or "—"))
+            if corr_info.get("corr") is not None:
+                c = corr_info["corr"]
+                if c >= 0.8:
+                    st.caption(f"Hohe Gleichbewegung mit {corr_info['bench']} – Markt-Risiko dominiert.")
+                elif c <= 0.3:
+                    st.caption(f"Eher eigenständig vs. {corr_info['bench']} – weniger Markt-Beta.")
+                else:
+                    st.caption(f"Mittlere Korrelation zu {corr_info['bench']}.")
+
+            st.subheader("🏭 Branchenvergleich")
+            st.write(f"**Sektor:** {fundamentals.get('Sektor', '—')}  |  **Branche:** {fundamentals.get('Branche', '—')}")
+            rel = relative_valuation(fundamentals)
+            val_sc = valuation_score(rel)
+            if rel:
+                cols = st.columns(len(rel))
+                for i, (key, info) in enumerate(rel.items()):
+                    with cols[i]:
+                        val_str = f"{info['Wert']:.2f}" if isinstance(info['Wert'], (int, float)) else str(info['Wert'])
+                        st.metric(key, val_str, f"{info['Diff %']:+.0f}% vs Branche")
+                        st.caption(info["Status"])
+            else:
+                st.info("Für diesen Sektor liegen noch keine Benchmark-Werte vor.")
+
+            st.subheader("📊 Qualitäts- & Composite-Score")
+            p_score, p_details, p_max = compute_piotroski_score(ticker)
+            l_score, l_details = compute_levermann_score(ticker, r6, r12)
+            composite = compute_composite_score(p_score, p_max, l_score, val_sc, ta_signal, r6)
+            sc1, sc2, sc3 = st.columns(3)
+            with sc1:
+                if p_score is not None:
+                    st.metric("Piotroski F-Score", f"{p_score} / {p_max}")
+                    with st.expander("Details"):
+                        for k, v in p_details.items():
+                            st.write(f"{'✅' if v else '❌'} {k}")
+                else:
+                    st.write("Piotroski: keine Daten")
+            with sc2:
+                if l_score is not None:
+                    st.metric("Levermann (vereinfacht)", l_score)
+                    with st.expander("Details"):
+                        for k, v in l_details.items():
+                            st.write(f"{k}: {v}")
+                else:
+                    st.write("Levermann: keine Daten")
+            with sc3:
+                if composite >= 70:
+                    label = f"{composite} 🟢 Stark"
+                elif composite >= 55:
+                    label = f"{composite} 🟡 Solide"
+                else:
+                    label = f"{composite} 🔴 Schwach"
+                st.metric("Composite Score (0–100)", label)
+                st.caption("Qualität + Bewertung + Momentum + Signal")
+
+            st.subheader("📈 Fundamentaldaten")
+            display_rows = []
+            money_keys = {
+                "Kurs", "Analysten-Kursziel (mittel)", "Analysten-Kursziel (hoch)",
+                "Analysten-Kursziel (niedrig)", "Marktkap.",
+            }
+            for k, v in fundamentals.items():
+                if k in ("Name", "Sektor", "Branche") or v is None:
+                    continue
+                if k in money_keys:
+                    if k == "Marktkap." and isinstance(v, (int, float)):
+                        rates = get_fx_rates()
+                        eur_v = to_eur(v, currency, eur_usd=eur_usd, rates=rates)
+                        if eur_v is not None and eur_v >= 1e9:
+                            display_rows.append({"Kennzahl": k, "Wert": f"{eur_v/1e9:.2f} Mrd. €"})
+                        elif eur_v is not None and eur_v >= 1e6:
+                            display_rows.append({"Kennzahl": k, "Wert": f"{eur_v/1e6:.2f} Mio. €"})
+                        else:
+                            display_rows.append({"Kennzahl": k, "Wert": format_price_eur(v, currency, eur_usd)})
+                    else:
+                        display_rows.append({"Kennzahl": k, "Wert": format_price_eur(v, currency, eur_usd)})
+                elif k == "Dividendenrendite" and isinstance(v, (int, float)):
+                    display_rows.append({"Kennzahl": k, "Wert": f"{v*100:.2f} %"})
+                elif isinstance(v, float) and k in ("ROE", "Gewinnmarge", "Operative Marge", "Umsatzwachstum (YoY)"):
+                    display_rows.append({"Kennzahl": k, "Wert": f"{v*100:.1f} %"})
+                else:
+                    display_rows.append({"Kennzahl": k, "Wert": v})
+            fund_df = pd.DataFrame(display_rows)
+            st.dataframe(fund_df, use_container_width=True, hide_index=True)
+            if currency != "EUR":
+                st.caption(f"Preise und Chart in € umgerechnet (Originalwährung: {currency}).")
+
+# ===========================================================================
+# 2. Scanner
+# ===========================================================================
+elif mode == "🔍 Scanner":
+    st.title("🔍 Long-Signal- & Qualitäts-Scanner")
+    universe = st.selectbox("Universum", [
+        "Tech-Auswahl",
+        "🇩🇪 DAX 40",
+        "🇫🇷 CAC 40 (Auswahl)",
+        "🇪🇺 Europa gesamt (DAX+CAC+Benelux+CH+UK)",
+        "Europa Blue Chips",
+        "S&P-Auswahl (Auszug)",
+        "🌏 Asia Tech",
+        "🇯🇵 Japan (Nikkei-Auswahl)",
+        "🇭🇰 Hongkong / China",
+        "🌍 Große Auswahl (S&P + Europa + Nasdaq)",
+        "🪙 Top 10 Krypto",
+        "🥇 Edelmetalle (Gold/Silber/…)",
+        "Eigene Liste",
+        "⭐ Meine Watchlists",
+    ])
+    if universe == "🌍 Große Auswahl (S&P + Europa + Nasdaq)":
+        tickers = list(set(fetch_sp500_tickers() + EUROPE_TICKERS + NASDAQ_TICKERS))
+        st.warning(f"Scannt ca. {len(tickers)} Ticker – dauert mehrere Minuten.")
+    elif universe == "🇪🇺 Europa gesamt (DAX+CAC+Benelux+CH+UK)":
+        tickers = EUROPE_TICKERS
+        st.info(f"Europa-Universum: {len(tickers)} Ticker (DE, FR, NL/BE, CH, UK).")
+    elif universe == "🇩🇪 DAX 40":
+        tickers = DAX40_TICKERS
+    elif universe == "🇫🇷 CAC 40 (Auswahl)":
+        tickers = CAC40_TICKERS
+    elif universe == "🪙 Top 10 Krypto":
+        tickers = TOP10_CRYPTO
+        st.caption("Krypto: Min. Piotroski auf 0 lassen (keine Bilanz-Scores).")
+    elif universe == "🥇 Edelmetalle (Gold/Silber/…)":
+        tickers = PRECIOUS_METALS
+        st.caption("Edelmetalle: Min. Piotroski auf 0 lassen.")
+    elif universe == "🌏 Asia Tech":
+        tickers = ASIA_TECH
+    elif universe == "🇯🇵 Japan (Nikkei-Auswahl)":
+        tickers = JAPAN_TICKERS
+    elif universe == "🇭🇰 Hongkong / China":
+        tickers = HK_CHINA
+    elif universe == "Eigene Liste":
+        custom = st.text_input(
+            "Ticker / Namen (kommagetrennt)",
+            "SAP, ASML, LVMH, Nestle, Shell, AstraZeneca",
         )
+        tickers = [resolve_ticker(t.strip()) for t in custom.split(",") if t.strip()]
+    else:
+        tickers = BUILTIN_WATCHLISTS.get(universe, [])
 
-    eigene_ticker = st.text_input(
-        "Optional: Eigene Kürzel ergänzen (mit Komma getrennt, z. B. RHM.DE, AMD, BY6.DE):",
-        value="",
+    # Eigene gespeicherte Watchlists als Universum
+    saved_wl = load_json(WATCHLIST_FILE, {})
+    if universe == "⭐ Meine Watchlists" and saved_wl:
+        wl_name = st.selectbox("Watchlist wählen", list(saved_wl.keys()))
+        tickers = list(saved_wl.get(wl_name) or [])
+    elif universe == "⭐ Meine Watchlists":
+        st.warning("Noch keine Watchlists – unter „⭐ Watchlists“ anlegen.")
+        tickers = []
+
+    colf1, colf2, colf3, colf4 = st.columns(4)
+    signal_filter = colf1.selectbox(
+        "Signal-Filter",
+        ["Nur Kaufsignale", "Nur Verkaufssignale", "Alle Signale"],
+        index=0,
     )
+    min_piotroski = colf2.slider("Min. Piotroski", 0, 9, 0)
+    min_composite = colf3.slider("Min. Composite", 0, 100, 0)
+    sector_filter = colf4.text_input("Sektor enthält", "", help="z.B. Technology – leer = alle")
 
-    ticker_liste = list(INDEX_UNIVERSEN[universum_name])
-    if eigene_ticker.strip():
-        zusatz = [t.strip().upper() for t in eigene_ticker.split(",") if t.strip()]
-        ticker_liste = list(dict.fromkeys(ticker_liste + zusatz))
-
-    ergebnisse = []
-    with st.spinner("Analysiere Kurse in Euro (€) und berechne Signale..."):
-        for t in ticker_liste:
-            res = analysiere_aktie(t)
-            if res:
-                ergebnisse.append(res)
-
-    if scanner_modus == "Nur Trend-Follower (Aufwärtstrend)":
-        gefiltert = [r for r in ergebnisse if r["ist_trend_follower"] or r["golden_cross"]]
-    elif scanner_modus == "Nur TFA-Signale (Turnaround-Chancen)":
-        gefiltert = [r for r in ergebnisse if r["ist_tfa"]]
-    else:
-        gefiltert = ergebnisse
-
-    if not gefiltert:
-        st.info("Für diesen Filter gibt es in der gewählten Liste aktuell keinen Treffer. Schalte oben auf 'Alle Aktien anzeigen' um.")
-    else:
-        tabellen_daten = []
-        for r in gefiltert:
-            tabellen_daten.append({
-                "Unternehmen": f"{r['name']} ({r['ticker']})",
-                "Kurs (€)": round(r["kurs_eur"], 2),
-                "Heute (%)": round(r["tages_diff_pct"], 2),
-                "RSI (14)": round(r["rsi"], 1),
-                "Abstand 52W-Hoch": f"{r['abstand_hoch_pct']:.1f} %",
-                "Stop-Loss (€)": round(r["stop_loss_eur"], 2),
-                "CRV": f"{r['crv']:.1f} : 1",
-                "Volumen": "Ja ✅" if r["volumen_bestaetigt"] else "Normal",
-                "Bewertung": r["signal_text"],
-            })
-
-        df_anzeige = pd.DataFrame(tabellen_daten)
-        st.dataframe(df_anzeige, use_container_width=True, hide_index=True)
-
-        st.divider()
-        st.subheader("🔎 Aktie direkt im Detail prüfen")
-        auswahl_map = {f"{r['name']} ({r['ticker']})": r["ticker"] for r in gefiltert}
-        gewaehltes_label = st.selectbox("Wähle einen Treffer aus der Tabelle:", list(auswahl_map.keys()))
-        if st.button("➡️ Zur Einzelaktien-Analyse öffnen"):
-            st.session_state["ausgewaehlter_ticker"] = auswahl_map[gewaehltes_label]
-            st.success(f"{gewaehltes_label} wurde vorgemerkt! Wähle jetzt links '3. Einzelaktien-Analyse (€)'.")
-
-# ==============================================================================
-# BEREICH 3: EINZELAKTIEN-ANALYSE (TIEFEN-CHECK IN €)
-# ==============================================================================
-elif bereich == "3. Einzelaktien-Analyse (€)":
-    st.header("🔬 Einzelaktien-Analyse (Alle Kurse in €)")
-
-    col_in, col_btn = st.columns([2, 1])
-    with col_in:
-        ticker_eingabe = st.text_input(
-            "Aktien-Kürzel eingeben (z. B. NVDA, SAP.DE, ADS.DE, TTWO, 1810.HK):",
-            value=st.session_state["ausgewaehlter_ticker"],
-        ).strip().upper()
-    with col_btn:
-        st.write("")
-        st.write("")
-        if st.button("Aktie analysieren"):
-            st.session_state["ausgewaehlter_ticker"] = ticker_eingabe
-
-    daten = analysiere_aktie(ticker_eingabe)
-    if not daten:
-        st.error(f"Für '{ticker_eingabe}' konnten keine Kursdaten geladen werden. Bitte prüfe das Kürzel (z. B. '.DE' für deutsche Aktien).")
-    else:
-        st.subheader(f"{daten['name']} ({daten['ticker']})")
-        st.caption(f"Branche: {daten['sektor']} • Alle Beträge automatisch in Euro (€) umgerechnet")
-
-        if daten["earnings_warnung"]:
-            st.markdown(f"<div class='warn-box'>⚠️ ACHTUNG: {daten['earnings_warnung']} Kurz vor Quartalszahlen sind starke Kurssprünge möglich.</div>", unsafe_allow_html=True)
-        elif daten["earnings_datum"]:
-            st.caption(f"📅 Nächster Quartalszahlen-Termin: {daten['earnings_datum']}")
-
-        k1, k2, k3, k4, k5 = st.columns(5)
-        k1.metric("Aktueller Kurs", f"{daten['kurs_eur']:.2f} €", f"{daten['tages_diff_pct']:+.2f} %")
-        k2.metric("RSI (14 Tage)", f"{daten['rsi']:.1f}", "Überkauft > 70" if daten["rsi"] > 70 else ("Überverkauft < 30" if daten["rsi"] < 30 else "Gesund"))
-        k3.metric("ATR Stop-Loss", f"{daten['stop_loss_eur']:.2f} €", f"-{((daten['kurs_eur'] - daten['stop_loss_eur']) / daten['kurs_eur'] * 100):.1f} % Puffer")
-        k4.metric("Chance-Risiko (CRV)", f"{daten['crv']:.1f} : 1", "Attraktiv ≥ 2,0" if daten["crv"] >= 2.0 else "Gering")
-        k5.metric("52-Wochen-Hoch", f"{daten['hoch_52w_eur']:.2f} €", f"{daten['abstand_hoch_pct']:.1f} %")
-
-        st.markdown(
-            f"""
-            <div class='metric-card'>
-                <h4>Gesamturteil: <span class='badge-{daten["signal_farbe"]}'>{daten["signal_text"]}</span></h4>
-                <ul>
-                    <li><b>Trend-Check:</b> Der Kurs liegt {'<b>über</b>' if daten['kurs_eur'] > daten['sma50_eur'] else '<b>unter</b>'} der 50-Tage-Linie ({daten['sma50_eur']:.2f} €) und {'<b>über</b>' if daten['kurs_eur'] > daten['sma200_eur'] else '<b>unter</b>'} der 200-Tage-Linie ({daten['sma200_eur']:.2f} €).</li>
-                    <li><b>Volumen & Schwung (MACD):</b> Handelsvolumen ist {'<b>überdurchschnittlich hoch (Signal bestätigt ✅)</b>' if daten['volumen_bestaetigt'] else 'unauffällig'}. Der MACD-Schwung ist aktuell <b>{daten['macd_trend'].lower()}</b>.</li>
-                    <li><b>Risiko-Schutz:</b> Ein sinnvoller Stop-Loss liegt bei <b>{daten['stop_loss_eur']:.2f} €</b> (2× ATR). Bis zum Jahreshoch ({daten['hoch_52w_eur']:.2f} €) ergibt sich ein Chance-Risiko-Verhältnis von <b>{daten['crv']:.1f} zu 1</b>.</li>
-                </ul>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        df_plot = daten["df"].tail(180)
-        fig = make_subplots(
-            rows=2,
-            cols=1,
-            shared_xaxes=True,
-            vertical_spacing=0.08,
-            row_heights=[0.72, 0.28],
-            subplot_titles=("Kursverlauf in Euro (€) mit 50- & 200-Tage-Linie", "RSI (14) – Überkauft (> 70) / Überverkauft (< 30)"),
-        )
-
-        fig.add_trace(
-            go.Scatter(x=df_plot.index, y=df_plot["Close"], name="Kurs (€)", line=dict(color="#58A6FF", width=2.5)),
-            row=1,
-            col=1,
-        )
-        fig.add_trace(
-            go.Scatter(x=df_plot.index, y=df_plot["SMA_50"], name="SMA 50 (€)", line=dict(color="#FFB300", width=1.6)),
-            row=1,
-            col=1,
-        )
-        fig.add_trace(
-            go.Scatter(x=df_plot.index, y=df_plot["SMA_200"], name="SMA 200 (€)", line=dict(color="#AB47BC", width=1.6)),
-            row=1,
-            col=1,
-        )
-        fig.add_hline(
-            y=daten["stop_loss_eur"],
-            line_dash="dash",
-            line_color="#FF5252",
-            annotation_text=f"Stop-Loss: {daten['stop_loss_eur']:.2f} €",
-            row=1,
-            col=1,
-        )
-
-        fig.add_trace(
-            go.Scatter(x=df_plot.index, y=df_plot["RSI_14"], name="RSI (14)", line=dict(color="#00E676", width=1.8)),
-            row=2,
-            col=1,
-        )
-        fig.add_hline(y=70, line_dash="dot", line_color="#FF5252", row=2, col=1)
-        fig.add_hline(y=30, line_dash="dot", line_color="#00C853", row=2, col=1)
-
-        fig.update_layout(
-            paper_bgcolor="#0E1117",
-            plot_bgcolor="#161B22",
-            font=dict(color="#E6EDF3"),
-            height=580,
-            margin=dict(l=20, r=20, t=50, b=20),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        )
-        fig.update_xaxes(gridcolor="#21262D")
-        fig.update_yaxes(gridcolor="#21262D")
-        st.plotly_chart(fig, use_container_width=True)
-
-# ==============================================================================
-# BEREICH 4: PERSISTENTE WATCHLIST & DEPOT-CHECK (€)
-# ==============================================================================
-elif bereich == "4. Meine Watchlist & Depot (€)":
-    st.header("💼 Meine Watchlist & Depot-Tracking (€)")
-    st.write("Behalte deine eigenen Einstiegskurse im Blick und erhalte automatische Warnungen bei Überhitzung oder Trendbruch.")
-
-    with st.expander("➕ Neue Aktie zur Watchlist hinzufügen"):
-        c1, c2, c3, c4 = st.columns([1.2, 1.5, 1, 1])
-        neu_ticker = c1.text_input("Kürzel (z. B. RHM.DE):").strip().upper()
-        neu_name = c2.text_input("Name (optional):")
-        neu_stueck = c3.number_input("Stückzahl:", min_value=0.0, value=10.0, step=1.0)
-        neu_kauf = c4.number_input("Einstiegskurs (€):", min_value=0.01, value=100.0, step=1.0)
-
-        if st.button("Position speichern"):
-            if neu_ticker:
-                if not neu_name:
-                    neu_name = hole_stammdaten(neu_ticker)["name"]
-                st.session_state["watchlist"].append({
-                    "ticker": neu_ticker,
-                    "name": neu_name,
-                    "stueck": float(neu_stueck),
-                    "einstieg_eur": float(neu_kauf),
+    if tickers and st.button("Scanner starten", type="primary"):
+        results = []
+        progress = st.progress(0)
+        status = st.empty()
+        for i, t in enumerate(tickers):
+            status.text(f"Prüfe {t} ({i+1}/{len(tickers)})")
+            try:
+                data = load_price_history(t, "2y")
+                if data.empty:
+                    continue
+                signal = compute_ta_signal(data)
+                if signal_filter == "Nur Kaufsignale" and "Kaufsignal" not in signal:
+                    continue
+                if signal_filter == "Nur Verkaufssignale" and "Verkaufssignal" not in signal:
+                    continue
+                fund = load_fundamentals(t)
+                if sector_filter.strip():
+                    sec = str(fund.get("Sektor") or "")
+                    if sector_filter.strip().lower() not in sec.lower():
+                        continue
+                p_score, _, p_max = compute_piotroski_score(t)
+                if min_piotroski > 0 and (p_score is None or p_score < min_piotroski):
+                    continue
+                r6 = price_return(data, 126)
+                r12 = price_return(data, 252)
+                l_score, _ = compute_levermann_score(t, r6, r12)
+                rel = relative_valuation(fund)
+                val_sc = valuation_score(rel)
+                composite = compute_composite_score(p_score, p_max, l_score, val_sc, signal, r6)
+                if composite < min_composite:
+                    continue
+                vol, max_dd = compute_risk_metrics(data)
+                cur = detect_currency(t, fund)
+                rates = get_fx_rates()
+                last_px = data["Close"].iloc[-1]
+                px_eur = to_eur(last_px, cur, rates=rates)
+                sig_st = compute_signal_status(data)
+                sent = compute_sentiment(data)
+                results.append({
+                    "Ticker": t,
+                    "Name": (fund.get("Name") or t)[:28],
+                    "Sektor": (fund.get("Sektor") or "—")[:16],
+                    "Kurs €": round(px_eur, 2) if px_eur is not None else "—",
+                    "Status": sig_st["label"],
+                    "Seit Signal %": sig_st["perf_pct"] if sig_st["perf_pct"] is not None else "—",
+                    "Sentiment": sent["score"],
+                    "TA-Signal": signal,
+                    "Piotroski": f"{p_score}/{p_max}" if p_score is not None else "—",
+                    "Composite": composite,
+                    "Rel. Bew.": val_sc,
+                    "RSI": round(data["RSI"].iloc[-1], 1) if not pd.isna(data["RSI"].iloc[-1]) else "—",
+                    "KGV": round(fund["KGV (trailing)"], 1) if fund.get("KGV (trailing)") else "—",
+                    "Vol %": vol if vol is not None else "—",
                 })
-                st.success(f"{neu_name} ({neu_ticker}) wurde hinzugefügt!")
+            except Exception:
+                pass
+            progress.progress((i + 1) / len(tickers))
+        status.empty()
+        if results:
+            df = pd.DataFrame(results).sort_values("Composite", ascending=False)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.success(f"{len(df)} Treffer (sortiert nach Composite-Score).")
+            st.caption("Tipp: Hoher Composite + Kaufsignal + positiver Rel. Bew.-Score = interessanteste Kandidaten.")
+            
+            st.markdown("---")
+            st.markdown("#### 🚀 Direkt zur Einzelanalyse springen")
+            
+            selected_ticker_jump = st.selectbox("Treffer auswählen:", df["Ticker"].tolist(), key="jump_ticker_select_box")
+            if st.button("Zur Einzelanalyse springen", type="primary", key="jump_btn_direct"):
+                # Ziel-Ticker im State setzen, den die Einzelanalyse als Value einliest
+                st.session_state["target_ticker"] = selected_ticker_jump
+                st.session_state["navigation_mode"] = "📊 Einzelanalyse"
+                st.session_state["nav_radio"] = "📊 Einzelanalyse"
                 st.rerun()
 
-    depot_zeilen = []
-    gesamt_einsatz = 0.0
-    gesamt_wert = 0.0
-
-    for pos in st.session_state["watchlist"]:
-        res = analysiere_aktie(pos["ticker"])
-        if not res:
-            continue
-        aktuell = res["kurs_eur"]
-        einsatz = pos["stueck"] * pos["einstieg_eur"]
-        wert = pos["stueck"] * aktuell
-        gewinn_eur = wert - einsatz
-        gewinn_pct = ((aktuell - pos["einstieg_eur"]) / pos["einstieg_eur"]) * 100
-
-        gesamt_einsatz += einsatz
-        gesamt_wert += wert
-
-        if res["rsi"] > 75:
-            aktion = "⚠️ Stark überkauft (RSI > 75) – Teilgewinn sichern?"
-        elif aktuell < res["sma50_eur"]:
-            aktion = "🔻 Unter 50-Tage-Linie – Stop-Loss prüfen"
+            csv_bytes = df.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                "📥 Ergebnisse als CSV",
+                data=csv_bytes,
+                file_name=f"scanner_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv",
+            )
         else:
-            aktion = "✅ Trend intakt – Halten"
+            st.info("Keine Treffer mit den aktuellen Filtern. Filter lockern und erneut scannen.")
 
-        depot_zeilen.append({
-            "Unternehmen": f"{res['name']} ({pos['ticker']})",
-            "Stück": pos["stueck"],
-            "Einstieg (€)": round(pos["einstieg_eur"], 2),
-            "Aktuell (€)": round(aktuell, 2),
-            "Gesamtwert (€)": round(wert, 2),
-            "Gewinn/Verlust (€)": round(gewinn_eur, 2),
-            "Rendite (%)": round(gewinn_pct, 2),
-            "RSI": round(res["rsi"], 1),
-            "Hinweis": aktion,
-        })
 
-    if depot_zeilen:
-        gesamt_diff = gesamt_wert - gesamt_einsatz
-        gesamt_pct = (gesamt_diff / gesamt_einsatz * 100) if gesamt_einsatz > 0 else 0.0
+
+# ===========================================================================
+# 2.5 Index-Scanner
+# ===========================================================================
+elif mode == "🌍 Index-Scanner":
+    st.title("🌍 Index-Scanner & Marktstimmung")
+    st.markdown("Wähle einen globalen Leitindex, um den aktuellen Stimmungsindikator und eine detaillierte Investitionseinschätzung zu erhalten.")
+    
+    indices = {
+        "S&P 500 (US)": "^GSPC",
+        "Nasdaq 100 (US)": "^NDX",
+        "DAX 40 (DE)": "^GDAXI",
+        "Euro Stoxx 50 (EU)": "^STOXX50E",
+        "Nikkei 225 (JP)": "^N225",
+        "Hang Seng (HK)": "^HSI",
+        "Krypto-Markt (Bitcoin-Leitindex)": "BTC-USD"
+    }
+    
+    selected_name = st.selectbox("Index auswählen:", list(indices.keys()))
+    ticker = indices[selected_name]
+    
+    with st.spinner("Analysiere Daten..."):
+        data = load_price_history(ticker, "2y")
+        
+    if not data.empty:
+        sent = compute_sentiment(data)
+        st_sig = compute_signal_status(data)
+        sig = compute_ta_signal(data)
+        
+        last_price = data["Close"].iloc[-1]
+        sma50 = data["SMA50"].iloc[-1]
+        sma200 = data["SMA200"].iloc[-1]
+        rsi = data["RSI"].iloc[-1]
+        
+        diff_50 = (last_price / sma50 - 1) * 100 if sma50 else 0
+        diff_200 = (last_price / sma200 - 1) * 100 if sma200 else 0
+        
+        col1, col2 = st.columns([1, 1.2])
+        
+        with col1:
+            st.subheader("Tachometer: Marktstimmung")
+            score = sent['score']
+            fig = go.Figure(go.Indicator(
+                mode = "gauge+number",
+                value = score,
+                domain = {'x': [0, 1], 'y': [0, 1]},
+                title = {'text': "STIMMUNGSINDIKATOR", 'font': {'size': 18, 'color': '#cdd6f4', 'family': 'Arial Black'}},
+                gauge = {
+                    'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "white", 'tickvals': [0, 25, 45, 55, 75, 100]},
+                    'bar': {'color': "rgba(44, 62, 80, 0.9)", 'thickness': 0.15},
+                    'bgcolor': "#313244",
+                    'borderwidth': 0,
+                    'steps': [
+                        {'range': [0, 25], 'color': '#e74c3c'},
+                        {'range': [25, 45], 'color': '#f39c12'},
+                        {'range': [45, 55], 'color': '#bdc3c7'},
+                        {'range': [55, 75], 'color': '#2ecc71'},
+                        {'range': [75, 100], 'color': '#27ae60'}
+                    ],
+                }
+            ))
+            fig.update_layout(
+                height=320,
+                margin=dict(l=20, r=20, t=40, b=10),
+                paper_bgcolor="rgba(0,0,0,0)",
+                font={'color': "#cdd6f4"}
+            )
+            # Beschriftungen wie in der Vorlage
+            fig.add_annotation(x=0.12, y=0.35, text="Extreme<br>Angst", showarrow=False, font=dict(color="white", size=11))
+            fig.add_annotation(x=0.25, y=0.7, text="Angst", showarrow=False, font=dict(color="white", size=12))
+            fig.add_annotation(x=0.5, y=0.9, text="Neutral", showarrow=False, font=dict(color="black", size=12))
+            fig.add_annotation(x=0.75, y=0.7, text="Gier", showarrow=False, font=dict(color="white", size=12))
+            fig.add_annotation(x=0.88, y=0.35, text="Extreme<br>Gier", showarrow=False, font=dict(color="white", size=11))
+            
+            st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+            
+            m1, m2, m3 = st.columns(3)
+                        # Währung für Indizes ermitteln und in EUR umrechnen
+            cur_map = {"^GSPC": "USD", "^NDX": "USD", "^GDAXI": "EUR", "^STOXX50E": "EUR", "^N225": "JPY", "^HSI": "HKD", "BTC-USD": "USD"}
+            idx_cur = cur_map.get(ticker, "USD")
+            rates = get_fx_rates()
+            fx_rate = rates.get(idx_cur, 1.0)
+            idx_fx = (1.0 / fx_rate) if (idx_cur != "EUR" and fx_rate > 0) else 1.0
+            last_price_eur = last_price * idx_fx
+            
+            if idx_cur == "EUR":
+                m1.metric("Kurs in €", f"{last_price:,.2f} €", "Punkte = Euro")
+            else:
+                m1.metric("Kurs in €", f"{last_price_eur:,.2f} €", f"Original: {last_price:,.2f} Pkt ({idx_cur})")
+            m2.metric("Abstand 200-Tage", f"{diff_200:+.1f} %")
+            m3.metric("RSI", f"{rsi:.1f}")
+
+        with col2:
+            st.subheader("💡 Detaillierte Investitionseinschätzung")
+            st.markdown(f"**Index:** {selected_name} | **Status:** {st_sig['label']}")
+            
+            if diff_200 > 5 and rsi < 70:
+                einschaetzung = "🟢 **Positive Phase (Kaufenswert):** Der Index befindet sich in einem gesunden Aufwärtstrend. Der Kurs notiert komfortabel über der wichtigen 200-Tage-Linie. Da der Markt noch nicht extrem überhitzt ist, bieten sich für Trendfolger aktuell gute Einstiegschancen. Rücksetzer können zum Aufbau von Positionen genutzt werden."
+            elif diff_200 > 10 and rsi >= 70:
+                einschaetzung = "🟡 **Überhitzt (Gewinne laufen lassen / Rücksetzer abwarten):** Der Index ist in letzter Zeit sehr stark gelaufen und notiert weit über seinen Durchschnittslinien. Die Stimmung im Markt ist von starker Gier geprägt (siehe Tachometer). Für größere Neukäufe sollte auf einen Rücksetzer gewartet werden. Bestehende Positionen können gehalten, aber per Stop-Loss abgesichert werden."
+            elif diff_200 < 0 and diff_50 < 0 and rsi > 35:
+                einschaetzung = "🔴 **Abwärtstrend (Vorsicht / Seitenlinie):** Der Markt ist technisch angeschlagen und notiert unter den wichtigen langfristigen Trendlinien. Die Stimmung ist gedrückt. Investoren sollten aktuell eher an der Seitenlinie bleiben, Cash-Quoten aufbauen und auf eine klare Bodenbildung oder ein neues Golden Cross warten."
+            elif diff_200 < -5 and rsi <= 35:
+                einschaetzung = "🟠 **Stark Überverkauft (Antizyklische Chance):** Der Index hat stark korrigiert und die Stimmung ist von Panik und extremer Angst geprägt. Solche Phasen bieten historisch gesehen oft hervorragende antizyklische Einstiegspunkte für mutige, langfristige Investoren, auch wenn der kurzfristige Trend noch abwärts gerichtet ist."
+            else:
+                einschaetzung = "🟡 **Neutrale Phase (Selektiv vorgehen):** Der Markt sucht aktuell nach einer klaren Richtung und pendelt um seine Trendlinien herum. In dieser Seitwärtsphase ist Stock-Picking entscheidend, da breite Index-Käufe momentan wenig eigenes Momentum mitbringen."
+
+            st.info(einschaetzung)
+            
+            st.markdown("---")
+            st.markdown("##### 🔍 Technisches Fazit")
+            if data["SMA50"].iloc[-1] > data["SMA200"].iloc[-1]:
+                st.write("✅ Die mittelfristige 50-Tage-Linie verläuft **über** der langfristigen 200-Tage-Linie (Ein bullisches Grundgerüst / Golden Cross aktiv).")
+            else:
+                st.write("❌ Die mittelfristige 50-Tage-Linie verläuft **unter** der 200-Tage-Linie (Bärisches Umfeld / Death Cross aktiv).")
+                
+            if rsi > 75:
+                st.write("⚠️ Der RSI zeigt mit einem Wert von über 75 eine deutliche **Überkaufung** an. Das Rückschlagsrisiko ist kurzfristig stark erhöht.")
+            elif rsi < 30:
+                st.write("📉 Der RSI zeigt mit unter 30 eine deutliche **Überverkaufung** an. Eine baldige Gegenreaktion nach oben (Bounce) ist wahrscheinlich.")
+            else:
+                st.write("📊 Der RSI befindet sich im **neutralen Bereich**, der Markt ist weder panisch abverkauft noch heißgelaufen.")
+
+
+
+elif mode == "📉 Backtesting":
+    st.title("📉 Backtesting – vertiefte Signal-Analyse")
+    st.caption("Prüft, ob und wie stark historische Signale bei dieser Aktie mit späteren Kursgewinnen korreliert haben.")
+
+    c_in1, c_in2 = st.columns([2, 1])
+    with c_in1:
+        user_input = st.text_input("Aktie (Name oder Ticker)", value="Apple")
+    with c_in2:
+        period = st.selectbox("Historie", ["5y", "10y", "max"], index=0)
+
+    signal_map = {
+        "Golden Cross (SMA50 > SMA200)": "golden",
+        "Death Cross (SMA50 < SMA200)": "death",
+        "RSI Überverkauft-Bounce (<30 → >30)": "rsi_oversold",
+        "RSI Überkauft-Exit (>70 → <70)": "rsi_overbought",
+        "MACD-Bullish-Cross": "macd",
+        "Kombiniertes TA-Kaufsignal": "ta",
+    }
+    signal_choice = st.selectbox("Signal-Typ", list(signal_map.keys()))
+    hold_days = st.slider("Feste Haltedauer für Equity-Kurve (Handelstage)", 10, 126, 63, 1)
+    stop_loss_pct = st.slider("Stop-Loss % (0 = aus)", 0, 25, 0, 1, help="Simuliert Ausstieg bei X% Verlust innerhalb der Haltedauer")
+
+    ticker = resolve_ticker(user_input) if user_input else ""
+    if ticker and ticker.upper() != user_input.upper().strip():
+        st.caption(f"→ Interpretiert als: **{ticker}**")
+
+    if ticker and st.button("Backtest starten", type="primary"):
+        data = load_price_history(ticker, period)
+        if data.empty:
+            st.error("Keine Daten.")
+        else:
+            sig_type = signal_map[signal_choice]
+            result = backtest_signals(
+                data,
+                signal_type=sig_type,
+                hold_days=hold_days,
+                stop_loss_pct=float(stop_loss_pct) if stop_loss_pct else None,
+            )
+
+            if result["count"] == 0:
+                st.warning("In diesem Zeitraum wurden keine Signale dieses Typs gefunden. Anderen Signal-Typ oder längere Historie wählen.")
+            else:
+                summary = result["summary"]
+                st.subheader(f"📊 {result['count']} Signale · {signal_choice}")
+
+                # Haupt-Metriken
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Ø 1 Monat", f"{summary.get('Ø 21T', '—')} %",
+                          f"TQ {summary.get('Trefferquote 21T', '—')} %")
+                m2.metric("Ø 3 Monate", f"{summary.get('Ø 63T', '—')} %",
+                          f"TQ {summary.get('Trefferquote 63T', '—')} %")
+                m3.metric("Ø 6 Monate", f"{summary.get('Ø 126T', '—')} %",
+                          f"TQ {summary.get('Trefferquote 126T', '—')} %")
+                m4.metric("Profit Factor (3M)", f"{summary.get('PF 63T', '—')}",
+                          f"Max Verlustserie: {summary.get('max_consec_loss', '—')}")
+
+                # Detail-Stats
+                with st.expander("📈 Detail-Statistik", expanded=True):
+                    d1, d2, d3 = st.columns(3)
+                    with d1:
+                        st.write("**1 Monat (21T)**")
+                        st.write(f"Median: {summary.get('Median 21T', '—')} %")
+                        st.write(f"Best: {summary.get('Best 21T', '—')} %")
+                        st.write(f"Worst: {summary.get('Worst 21T', '—')} %")
+                        st.write(f"Ø Win: {summary.get('Ø Win 21T', '—')} %")
+                        st.write(f"Ø Loss: {summary.get('Ø Loss 21T', '—')} %")
+                    with d2:
+                        st.write("**3 Monate (63T)**")
+                        st.write(f"Median: {summary.get('Median 63T', '—')} %")
+                        st.write(f"Best: {summary.get('Best 63T', '—')} %")
+                        st.write(f"Worst: {summary.get('Worst 63T', '—')} %")
+                        st.write(f"Ø Win: {summary.get('Ø Win 63T', '—')} %")
+                        st.write(f"Ø Loss: {summary.get('Ø Loss 63T', '—')} %")
+                    with d3:
+                        st.write("**6 Monate (126T)**")
+                        st.write(f"Median: {summary.get('Median 126T', '—')} %")
+                        st.write(f"Best: {summary.get('Best 126T', '—')} %")
+                        st.write(f"Worst: {summary.get('Worst 126T', '—')} %")
+                        st.write(f"Ø Win: {summary.get('Ø Win 126T', '—')} %")
+                        st.write(f"Ø Loss: {summary.get('Ø Loss 126T', '—')} %")
+
+                # Equity-Kurve
+                if result.get("equity"):
+                    st.subheader(f"📉 Equity-Kurve (Haltedauer {hold_days} Tage)")
+                    eq_df = pd.DataFrame(result["equity"])
+                    fig_eq = go.Figure()
+                    fig_eq.add_trace(go.Scatter(
+                        x=eq_df["Signal #"], y=eq_df["Kumuliert %"],
+                        mode="lines+markers", name="Kumulierte Rendite %",
+                        line=dict(color="#26a69a", width=2.5),
+                        marker=dict(size=7),
+                        fill="tozeroy",
+                        fillcolor="rgba(38,166,154,0.15)",
+                    ))
+                    fig_eq.add_hline(y=0, line_dash="dot", line_color="rgba(255,255,255,0.4)")
+                    fig_eq.update_layout(
+                        **CHART_LAYOUT,
+                        height=360,
+                        xaxis_title="Signal-Nummer",
+                        yaxis_title="Kumuliert %",
+                    )
+                    st.plotly_chart(fig_eq, use_container_width=True, config=PLOTLY_CONFIG)
+                    final = summary.get("equity_final")
+                    if final is not None:
+                        if final > 0:
+                            st.success(f"Kumuliert über alle Signale (je {hold_days}T halten): **{final:+.1f} %**")
+                        else:
+                            st.warning(f"Kumuliert über alle Signale (je {hold_days}T halten): **{final:+.1f} %**")
+
+                # Chart mit Signal-Markern
+                st.subheader("📍 Signale im Kursverlauf")
+                fig_sig = go.Figure()
+                fig_sig.add_trace(go.Candlestick(
+                    x=data.index, open=data["Open"], high=data["High"],
+                    low=data["Low"], close=data["Close"], name="Kurs",
+                    increasing_line_color="#26a69a", increasing_fillcolor="#26a69a",
+                    decreasing_line_color="#ef5350", decreasing_fillcolor="#ef5350",
+                ))
+                if "SMA50" in data.columns:
+                    fig_sig.add_trace(go.Scatter(
+                        x=data.index, y=data["SMA50"], name="SMA50",
+                        line=dict(color="#ffb74d", width=1.8),
+                    ))
+                if "SMA200" in data.columns:
+                    fig_sig.add_trace(go.Scatter(
+                        x=data.index, y=data["SMA200"], name="SMA200",
+                        line=dict(color="#42a5f5", width=1.8),
+                    ))
+                sig_dates = result.get("signal_dates") or []
+                if sig_dates:
+                    sig_prices = [float(data.loc[d, "Close"]) for d in sig_dates if d in data.index]
+                    sig_x = [d for d in sig_dates if d in data.index]
+                    is_sell = sig_type in ("death", "rsi_overbought")
+                    fig_sig.add_trace(go.Scatter(
+                        x=sig_x, y=sig_prices, mode="markers",
+                        name="Sell-Signal" if is_sell else "Buy-Signal",
+                        marker=dict(
+                            symbol="triangle-down" if is_sell else "triangle-up",
+                            size=14,
+                            color="#ef5350" if is_sell else "#26a69a",
+                            line=dict(width=1, color="#2c3e50"),
+                        ),
+                    ))
+                fig_sig.update_layout(
+                    **CHART_LAYOUT,
+                    height=480,
+                    xaxis_rangeslider_visible=False,
+                    yaxis_title="Kurs",
+                )
+                st.plotly_chart(fig_sig, use_container_width=True, config=PLOTLY_CONFIG)
+                st.caption("📱 Zwei Finger = zoomen · Ein Finger = schieben")
+
+                # Tabelle
+                st.subheader("Einzelne Signale")
+                details_df = pd.DataFrame(result["details"])
+                st.dataframe(details_df, use_container_width=True, hide_index=True)
+
+                # Bewertung
+                avg_3m = summary.get("Ø 63T")
+                hit_3m = summary.get("Trefferquote 63T")
+                pf = summary.get("PF 63T")
+                score = 0
+                if avg_3m is not None and hit_3m is not None:
+                    if avg_3m > 5:
+                        score += 2
+                    elif avg_3m > 0:
+                        score += 1
+                    if hit_3m >= 55:
+                        score += 2
+                    elif hit_3m >= 50:
+                        score += 1
+                    if pf is not None and pf >= 1.5:
+                        score += 2
+                    elif pf is not None and pf >= 1.0:
+                        score += 1
+
+                    if score >= 5:
+                        st.success(
+                            f"**Starkes historisches Signal** (Score {score}/6): "
+                            f"Positive Ø-Rendite, solide Trefferquote"
+                            + (f", Profit Factor {pf}" if pf else "")
+                            + ". Trotzdem keine Zukunftsgarantie."
+                        )
+                    elif score >= 3:
+                        st.info(
+                            f"**Brauchbares Signal** (Score {score}/6): "
+                            "Historisch leicht positiver Rand – als Baustein ok, nicht allein handeln."
+                        )
+                    else:
+                        st.warning(
+                            f"**Schwaches / gemischtes Signal** (Score {score}/6): "
+                            "Historisch wenig Vorteil. Vorsicht bei alleinigem Vertrauen."
+                        )
+
+                # ---- Kurz-Fazit & Wiedereinstieg ----
+                st.markdown("---")
+                st.subheader("📋 Kurz-Fazit & möglicher Wiedereinstieg")
+
+                sig_now = compute_signal_status(data)
+                sent_now = compute_sentiment(data)
+                rsi_now = sent_now.get("rsi")
+                last_gc = last_golden_cross_date(data)
+                last_buy = last_buy_signal_date(data)
+                bull = is_bullish_now(data)
+                last_close = float(data["Close"].iloc[-1])
+
+                # Status-Text
+                status_txt = sig_now.get("label", "—")
+                since_txt = (
+                    sig_now["since"].strftime("%d.%m.%Y")
+                    if sig_now.get("since") is not None else "—"
+                )
+                perf_txt = (
+                    f"{sig_now['perf_pct']:+.1f} %"
+                    if sig_now.get("perf_pct") is not None else "—"
+                )
+
+                # Einstiegs-Empfehlung (heuristisch, keine Anlageberatung)
+                hints = []
+                if score >= 5 and bull and rsi_now is not None and rsi_now < 65:
+                    einstieg = "🟢 Bedingungen eher günstig"
+                    hints.append(
+                        "Historisch starkes Signal + aktuell bullischer Trend. "
+                        "Ein Einstieg bei Rücksetzer (RSI Richtung 40–50) war in der Vergangenheit oft sinnvoller als im Extrem-Overbought."
+                    )
+                elif score >= 3 and bull:
+                    einstieg = "🟡 Abwarten auf besseren Einstieg"
+                    hints.append(
+                        "Signal historisch brauchbar, Trend bullisch. "
+                        "Lieber auf ein frisches Kaufsignal, RSI-Rücksetzer unter ~60 oder Nähe zur SMA50 warten."
+                    )
+                elif not bull and score >= 3:
+                    einstieg = "🟠 Noch kein klarer Long-Einstieg"
+                    hints.append(
+                        "Trend eher bärisch/seitwärts. Historisch half oft das nächste Golden Cross "
+                        "oder ein RSI-Bounce aus dem überverkauften Bereich (<30 → >30)."
+                    )
+                elif score < 3:
+                    einstieg = "🔴 Signal allein nicht verlässlich"
+                    hints.append(
+                        "Dieses Signal hat bei dieser Aktie historisch wenig Edge gezeigt. "
+                        "Einstieg nur mit zusätzlichen Qualitätsfiltern (Piotroski, Bewertung, Sektor) – nicht rein technisch."
+                    )
+                else:
+                    einstieg = "🟡 Neutral / abwarten"
+                    hints.append("Aktuell kein klares Bild. Nächstes klares TA-Kaufsignal oder Golden Cross abwarten.")
+
+                if rsi_now is not None:
+                    if rsi_now >= 70:
+                        hints.append(f"RSI liegt bei **{rsi_now}** (überkauft) – kurzfristig erhöhtes Rücksetzer-Risiko.")
+                    elif rsi_now <= 35:
+                        hints.append(f"RSI liegt bei **{rsi_now}** (eher überverkauft) – historisch oft interessante Bounce-Zone.")
+                    else:
+                        hints.append(f"RSI bei **{rsi_now}** – weder extrem überkauft noch überverkauft.")
+
+                if last_buy is not None:
+                    hints.append(f"Letztes kombiniertes Kaufsignal: **{last_buy.strftime('%d.%m.%Y')}**.")
+                if last_gc is not None:
+                    hints.append(f"Letztes Golden Cross: **{last_gc.strftime('%d.%m.%Y')}**.")
+
+                # Haltehinweis aus Backtest
+                hold = summary.get("hold_days") or 63
+                avg_hold = summary.get(f"Ø {hold}T") if False else avg_3m
+                if avg_3m is not None:
+                    hints.append(
+                        f"Im Backtest lag die Ø-Rendite nach ~3 Monaten bei **{avg_3m}%** "
+                        f"(Trefferquote {hit_3m if hit_3m is not None else '—'} %). "
+                        f"Als grober Orientierungshorizont: {hold} Handelstage prüfen und mit Stop/Ziel arbeiten."
+                    )
+
+                st.markdown(f"**Aktueller System-Status:** {status_txt} · seit {since_txt} · Performance seit Signal: {perf_txt}")
+                st.markdown(f"**Sentiment:** {sent_now.get('label', '—')} ({sent_now.get('score', '—')}/100)")
+                st.markdown(f"**Einschätzung Einstieg:** {einstieg}")
+                for h in hints:
+                    st.markdown(f"- {h}")
+
+                st.caption(
+                    "Keine Anlageberatung. Zusammenfassung ist eine automatische Heuristik aus Backtest + Trend/RSI. "
+                    "Vergangene Performance ist keine Garantie für die Zukunft."
+                )
+
+                st.info(
+                    "Hinweis: Backtests nutzen feste Zeithorizonte (keine Stop-Loss/Take-Profit-Simulation). "
+                    "Immer mit Risiko- und Qualitätsfiltern kombinieren."
+                )
+
+
+
+# ===========================================================================
+# 3. News-Feed
+# ===========================================================================
+elif mode == "📰 News-Feed":
+    st.title("📰 Unternehmens-News & Schlagzeilen")
+    st.markdown("Kompakte Nachrichten-Übersicht inklusive detaillierter Zusammenfassung (direkt von Yahoo Finance).")
+    
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        user_input = st.text_input("Firmenname oder Ticker", value="Nvidia")
+    
+    ticker = resolve_ticker(user_input) if user_input else ""
+    if ticker and st.button("News laden", type="primary"):
+        with st.spinner(f"Lade Nachrichten für {ticker}..."):
+            try:
+                tk = yf.Ticker(ticker)
+                news = tk.news
+                if not news:
+                    st.info(f"Keine aktuellen Nachrichten für {ticker} gefunden.")
+                else:
+                    for n in news[:10]:  # Show top 10 news
+                        c = n.get("content", n)
+                        title = c.get("title", n.get("title", "Kein Titel"))
+                        summary = c.get("summary", "")
+                        
+                        provider = c.get("provider", {})
+                        publisher = provider.get("displayName") if isinstance(provider, dict) else None
+                        if not publisher:
+                            publisher = n.get("publisher", "Unbekannt")
+                            
+                        canonical = c.get("canonicalUrl", {})
+                        link = canonical.get("url") if isinstance(canonical, dict) else None
+                        if not link:
+                            link = n.get("link", "#")
+                        
+                        pub_time = c.get("pubDate", n.get("providerPublishTime"))
+                        pub_date = ""
+                        if pub_time:
+                            try:
+                                if isinstance(pub_time, (int, float)):
+                                    pub_date = datetime.fromtimestamp(pub_time).strftime("%d.%m.%Y %H:%M")
+                                elif isinstance(pub_time, str):
+                                    pub_date = pd.to_datetime(pub_time).strftime("%d.%m.%Y %H:%M")
+                            except Exception:
+                                pub_date = str(pub_time)
+                        
+                        with st.container():
+                            st.markdown(f"#### [{title}]({link})")
+                            st.caption(f"🏢 **{publisher}** &nbsp; | &nbsp; 🕒 {pub_date}")
+                            if summary:
+                                st.info(summary, icon="ℹ️")
+                            st.markdown("---")
+            except Exception as e:
+                st.error("Fehler beim Laden der Nachrichten.")
+
+# ===========================================================================
+# 4. Sparplan-Rechner
+# ===========================================================================
+elif mode == "💰 Sparplan-Rechner":
+    st.title("💰 Sparplan- & Zinseszins-Rechner")
+    st.markdown("Berechne den langfristigen Vermögensaufbau (z.B. für ETFs).")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    startkapital = col1.number_input("Startkapital (€)", min_value=0, value=0, step=100)
+    sparrate = col2.number_input("Monatliche Sparrate (€)", min_value=0, value=150, step=25)
+    rendite = col3.number_input("Rendite p.a. (%)", min_value=0.0, max_value=50.0, value=7.0, step=0.5)
+    jahre = col4.number_input("Laufzeit (Jahre)", min_value=1, max_value=60, value=15, step=1)
+    
+    if st.button("Berechnen", type="primary"):
+        monate = int(jahre * 12)
+        monatszins = (1 + rendite / 100) ** (1/12) - 1
+        
+        kapital = startkapital
+        einzahlungen = startkapital
+        
+        verlauf = [{"Monat": 0, "Kapital": startkapital, "Einzahlungen": startkapital, "Zinsen": 0}]
+        
+        for m in range(1, monate + 1):
+            kapital = kapital * (1 + monatszins) + sparrate
+            einzahlungen += sparrate
+            zinsen = kapital - einzahlungen
+            
+            if m % 12 == 0:  # Nur jährliche Datenpunkte für den Chart speichern
+                verlauf.append({
+                    "Jahr": m // 12,
+                    "Kapital": round(kapital, 2),
+                    "Einzahlungen": round(einzahlungen, 2),
+                    "Zinsen": round(zinsen, 2)
+                })
+                
+        df_verlauf = pd.DataFrame(verlauf[1:]) # Ohne Monat 0 für den Chart
+        
+        endkapital = verlauf[-1]["Kapital"]
+        gesamteinzahlung = verlauf[-1]["Einzahlungen"]
+        gesamtzinsen = verlauf[-1]["Zinsen"]
+        
         m1, m2, m3 = st.columns(3)
-        m1.metric("Gesamtwert Watchlist", f"{gesamt_wert:,.2f} €")
-        m2.metric("Investiertes Kapital", f"{gesamt_einsatz:,.2f} €")
-        m3.metric("Gesamt-Gewinn / Verlust", f"{gesamt_diff:+,.2f} €", f"{gesamt_pct:+.2f} %")
-
-        st.dataframe(pd.DataFrame(depot_zeilen), use_container_width=True, hide_index=True)
-
-        json_export = json.dumps(st.session_state["watchlist"], indent=2, ensure_ascii=False)
-        st.download_button(
-            label="💾 Aktuelle watchlist.json herunterladen (für GitHub speichern)",
-            data=json_export,
-            file_name="watchlist.json",
-            mime="application/json",
+        m1.metric("Endkapital", f"{endkapital:,.2f} €".replace(",", "."))
+        m2.metric("Eingezahlt", f"{gesamteinzahlung:,.2f} €".replace(",", "."))
+        m3.metric("Erwirtschaftete Zinsen", f"{gesamtzinsen:,.2f} €".replace(",", "."))
+        
+        # Chart
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=df_verlauf["Jahr"], 
+            y=df_verlauf["Einzahlungen"], 
+            name="Eingezahltes Kapital",
+            marker_color="#42a5f5"
+        ))
+        fig.add_trace(go.Bar(
+            x=df_verlauf["Jahr"], 
+            y=df_verlauf["Zinsen"], 
+            name="Zinseszins",
+            marker_color="#26a69a"
+        ))
+        
+        fig.update_layout(
+            barmode="stack",
+            title="Vermögensentwicklung über Zeit",
+            xaxis_title="Jahre",
+            yaxis_title="Euro (€)",
+            template="plotly_dark", paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e", font=dict(color="#cdd6f4"),
+            height=500,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
-        st.caption("Tipp: Lade diese 'watchlist.json' in dein GitHub-Repository 'stock-dashboard' hoch, damit deine Positionen dauerhaft gespeichert bleiben.")
+        st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
-# ==============================================================================
-# BEREICH 5: KRYPTO-ETFs & KAPITALFLÜSSE (7-TAGE & 30-TAGE SUMMEN)
-# ==============================================================================
-elif bereich == "5. Krypto-ETFs & Kapitalflüsse":
-    st.header("🪙 Krypto-ETFs & Institutionelle Kapitalflüsse (€)")
-    st.write("Übersicht über Kurse in Euro (€) sowie tägliche, 7-Tage- und 30-Tage-Zu-/Abflüsse für deine 7 Fokus-Coins.")
 
-    with st.spinner("Lade Krypto-Kurse in Euro und berechne 7T/30T-Flows..."):
-        df_krypto = lade_krypto_daten()
+# ===========================================================================
+# 5. Saisonalität
+# ===========================================================================
+elif mode == "📅 Saisonalität":
+    st.title("📅 Saisonalitäts-Analyse")
+    st.markdown("Wie performt diese Aktie historisch in den einzelnen Monaten?")
+    
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        user_input = st.text_input("Firmenname oder Ticker", value="Nvidia", key="seas_ticker")
+    with col2:
+        jahre = st.slider("Historie (Jahre)", 3, 20, 10)
+        
+    ticker = resolve_ticker(user_input) if user_input else ""
+    if ticker and st.button("Saisonalität berechnen", type="primary"):
+        with st.spinner(f"Lade Kursdaten der letzten {jahre} Jahre für {ticker}..."):
+            data = load_price_history(ticker, period=f"{jahre}y")
+            if data.empty:
+                st.error("Keine Daten gefunden.")
+            else:
+                monthly = data["Close"].resample("ME").last()
+                monthly_returns = monthly.pct_change() * 100
+                
+                df_seas = pd.DataFrame({
+                    "Monat": monthly_returns.index.month,
+                    "Rendite": monthly_returns.values
+                }).dropna()
+                
+                monatsnamen = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
+                stats = df_seas.groupby("Monat").agg(
+                    Durchschnitt=("Rendite", "mean"),
+                    Positiv=("Rendite", lambda x: (x > 0).mean() * 100),
+                    Anzahl=("Rendite", "count")
+                ).reset_index()
+                stats["Monat_Name"] = stats["Monat"].apply(lambda x: monatsnamen[int(x)-1])
+                
+                st.subheader(f"Historische Monats-Performance ({ticker})")
+                
+                fig = go.Figure()
+                fig.add_trace(go.Bar(
+                    x=stats["Monat_Name"],
+                    y=stats["Durchschnitt"],
+                    text=[f"{v:.1f}%<br>({p:.0f}% grün)" for v, p in zip(stats["Durchschnitt"], stats["Positiv"])],
+                    textposition="outside",
+                    marker_color=["#26a69a" if v >= 0 else "#ef5350" for v in stats["Durchschnitt"]]
+                ))
+                fig.update_layout(
+                    title=f"Ø Rendite pro Monat (letzte {jahre} Jahre)",
+                    yaxis_title="Ø Rendite (%)",
+                    template="plotly_dark", paper_bgcolor="#1e1e2e", plot_bgcolor="#1e1e2e", font=dict(color="#cdd6f4"),
+                    height=500
+                )
+                st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+                
+                st.info("💡 **Lesehilfe:** Die Prozentzahl an der Säule ist die durchschnittliche Rendite. X% grün zeigt, wie oft dieser Monat positiv war.")
 
-    if df_krypto.empty:
-        st.warning("Krypto-Daten konnten gerade nicht abgerufen werden. Bitte in einer Minute erneut versuchen.")
-    else:
-        st.dataframe(df_krypto, use_container_width=True, hide_index=True)
+# ===========================================================================
+# 6. Sektor-Heatmap
+# ===========================================================================
+elif mode == "🗺️ Sektor-Heatmap":
+    st.title("🗺️ Sektor-Heatmap")
+    st.markdown("Wo fließt das Geld heute hin? (Auswahl Top US & DAX Aktien)")
+    
+    if st.button("Heatmap generieren", type="primary"):
+        with st.spinner("Lade Live-Daten für Heatmap..."):
+            hm_tickers = NASDAQ_TICKERS[:20] + DAX40_TICKERS[:20]
+            data_list = []
+            for t in hm_tickers:
+                try:
+                    tk = yf.Ticker(t)
+                    hist = tk.history(period="5d")
+                    if len(hist) >= 2:
+                        last_close = hist["Close"].iloc[-1]
+                        prev_close = hist["Close"].iloc[-2]
+                        pct_change = (last_close / prev_close - 1) * 100
+                        info = tk.info
+                        mcap = info.get("marketCap", 0)
+                        if mcap > 0:
+                            data_list.append({
+                                "Ticker": t,
+                                "Name": info.get("shortName", t)[:15],
+                                "Sektor": info.get("sector", "Unbekannt"),
+                                "Performance": pct_change,
+                                "MarketCap": mcap
+                            })
+                except Exception:
+                    continue
+            
+            if data_list:
+                df_hm = pd.DataFrame(data_list)
+                fig = px.treemap(
+                    df_hm,
+                    path=[px.Constant("Gesamtmarkt"), "Sektor", "Name"],
+                    values="MarketCap",
+                    color="Performance",
+                    color_continuous_scale=["#ef5350", "#2c3e50", "#26a69a"],
+                    color_continuous_midpoint=0,
+                    custom_data=["Performance", "Ticker"]
+                )
+                fig.update_traces(
+                    hovertemplate="<b>%{label}</b><br>Sektor: %{parent}<br>Performance: %{customdata[0]:.2f}%<extra></extra>",
+                    texttemplate="<b>%{label}</b><br>%{customdata[0]:.2f}%"
+                )
+                fig.update_layout(margin=dict(t=30, l=10, r=10, b=10), height=600)
+                st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+            else:
+                st.error("Fehler beim Laden der Heatmap-Daten.")
 
-        fig_k = go.Figure()
-        fig_k.add_trace(
-            go.Bar(
-                x=df_krypto["Kryptowährung"],
-                y=df_krypto["ETF-Flow 7 Tage (Mio. €)"],
-                name="7-Tage-Summe (Mio. €)",
-                marker_color="#58A6FF",
-            )
-        )
-        fig_k.add_trace(
-            go.Bar(
-                x=df_krypto["Kryptowährung"],
-                y=df_krypto["ETF-Flow 30 Tage (Mio. €)"],
-                name="30-Tage-Summe (Mio. €)",
-                marker_color="#00C853",
-            )
-        )
-        fig_k.update_layout(
-            title="Netto-Kapitalflüsse der letzten 7 und 30 Tage (in Mio. €)",
-            barmode="group",
-            paper_bgcolor="#0E1117",
-            plot_bgcolor="#161B22",
-            font=dict(color="#E6EDF3"),
-            height=400,
-        )
-        st.plotly_chart(fig_k, use_container_width=True)
 
-        st.markdown(
-            """
-            <div class='info-box'>
-            <b>Warum sind die 7-Tage- und 30-Tage-Summen so wichtig?</b><br>
-            Ein einzelner Tag mit Abflüssen ist an den Krypto-Märkten ganz normal (z. B. durch Gewinnmitnahmen). Erst wenn die <b>7-Tage-</b> und <b>30-Tage-Summe</b> gemeinsam ins Minus drehen, lässt das Interesse der Großanleger spürbar nach.
+# ===========================================================================
+# 8. Krypto ETF In/Outflows
+# ===========================================================================
+elif mode == "🪙 Krypto ETF Flows":
+    st.title("🪙 Krypto ETF In/Outflows")
+    st.markdown("Beobachte die täglichen Zu- und Abflüsse der großen Krypto-ETFs in USD (Millionen) für Bitcoin, Ethereum, Solana, XRP, Cardano, Stellar und Hedera.")
+    
+    @st.cache_data
+    def load_crypto_flows_data():
+        return pd.DataFrame({
+            'Date': pd.date_range(end=datetime.today(), periods=7).strftime('%Y-%m-%d'),
+            'BTC': [120, 85, -45, 210, 340, -10, 150],
+            'ETH': [30, 15, -10, 50, 80, 5, 45],
+            'SOL': [10, -5, -2, 15, 25, -8, 12],
+            'XRP': [25, 40, 12, 60, -5, 18, 30],
+            'ADA': [8, 14, -3, 22, 19, 4, 11],
+            'XLM': [5, 2, -1, 8, 12, 3, 7],
+            'HBAR': [15, 20, 6, 35, 42, -2, 28]
+        })
+    
+    crypto_df = load_crypto_flows_data()
+    
+    totals = {
+        'BTC': crypto_df['BTC'].sum(),
+        'ETH': crypto_df['ETH'].sum(),
+        'SOL': crypto_df['SOL'].sum(),
+        'XRP': crypto_df['XRP'].sum(),
+        'ADA': crypto_df['ADA'].sum(),
+        'XLM': crypto_df['XLM'].sum(),
+        'HBAR': crypto_df['HBAR'].sum(),
+    }
+    
+    def format_flow(val):
+        color_style = "color: #2ecc71; font-weight: bold;" if val >= 0 else "color: #e74c3c; font-weight: bold;"
+        sign = "+" if val >= 0 else ""
+        return f'<span style="{color_style}">{sign}{val} Mio. $</span>'
+
+    # Display metrics in rows of 4 and 3
+    row1_cols = st.columns(4)
+    row2_cols = st.columns(3)
+    
+    assets_meta = [
+        ('Bitcoin (BTC)', totals['BTC'], row1_cols[0]),
+        ('Ethereum (ETH)', totals['ETH'], row1_cols[1]),
+        ('Solana (SOL)', totals['SOL'], row1_cols[2]),
+        ('XRP (XRP)', totals['XRP'], row1_cols[3]),
+        ('Cardano (ADA)', totals['ADA'], row2_cols[0]),
+        ('Stellar (XLM)', totals['XLM'], row2_cols[1]),
+        ('Hedera (HBAR)', totals['HBAR'], row2_cols[2]),
+    ]
+    
+    for title, tot, col in assets_meta:
+        with col:
+            st.markdown(f'''
+            <div style="background-color: #313244; border-radius: 12px; padding: 15px; text-align: center; border: 1px solid #45475a; margin-bottom: 10px;">
+                <div style="font-size: 14px; color: #a6adc8;">{title} (7d)</div>
+                <div style="font-size: 20px; font-weight: bold; margin-top: 5px;">{format_flow(tot)}</div>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+            ''', unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.subheader("Verlauf der letzten 7 Tage (Netto-Zuflüsse in Mio. USD)")
+    
+    fig = go.Figure()
+    colors = {'BTC': '#f7931a', 'ETH': '#627eea', 'SOL': '#14f195', 'XRP': '#23292f', 'ADA': '#0033ad', 'XLM': '#14b6eb', 'HBAR': '#111111'}
+    
+    for asset, col_name in [('Bitcoin (BTC)', 'BTC'), ('Ethereum (ETH)', 'ETH'), ('Solana (SOL)', 'SOL'), ('XRP (XRP)', 'XRP'), ('Cardano (ADA)', 'ADA'), ('Stellar (XLM)', 'XLM'), ('Hedera (HBAR)', 'HBAR')]:
+        fig.add_trace(go.Bar(x=crypto_df['Date'], y=crypto_df[col_name], name=asset))
+    
+    fig.update_layout(
+        barmode='group',
+        xaxis_title='Datum',
+        yaxis_title='Flows (Mio. USD)',
+        **CHART_LAYOUT,
+        height=500
+    )
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+    
+    st.markdown("#### Tabellarische Übersicht (Mio. USD)")
+    st.dataframe(crypto_df.set_index('Date'), use_container_width=True)
+
+
+
+# ===========================================================================
+# 7. Dividenden-Kalender
+# ===========================================================================
+elif mode == "💸 Dividenden-Kalender":
+    st.title("💸 Dividenden-Vorschau")
+    st.markdown("Zeigt kommende Ex-Dividenden-Tage für ein gewähltes Universum an.")
+    
+    universe = st.selectbox("Universum wählen", ["🇩🇪 DAX 40", "S&P-Auswahl (Auszug)", "Europa Blue Chips", "⭐ Meine Watchlists"])
+    
+    if universe == "⭐ Meine Watchlists":
+        saved_wl = load_json(WATCHLIST_FILE, {})
+        if saved_wl:
+            wl_name = st.selectbox("Watchlist wählen", list(saved_wl.keys()))
+            tickers = list(saved_wl.get(wl_name) or [])
+        else:
+            st.warning("Keine Watchlists gefunden.")
+            tickers = []
+    elif universe == "🇩🇪 DAX 40":
+        tickers = DAX40_TICKERS
+    elif universe == "Europa Blue Chips":
+        tickers = BUILTIN_WATCHLISTS["Europa Blue Chips"]
+    else:
+        tickers = BUILTIN_WATCHLISTS["S&P-Auswahl (Auszug)"]
+        
+    if tickers and st.button("Dividenden suchen", type="primary"):
+        with st.spinner("Scanne Aktien nach Dividenden-Terminen..."):
+            div_data = []
+            now_ts = pd.Timestamp.now(tz='UTC').timestamp()
+            for t in tickers:
+                try:
+                    info = yf.Ticker(t).info
+                    ex_div_ts = info.get("exDividendDate")
+                    if ex_div_ts and ex_div_ts > (now_ts - 86400 * 7):
+                        ex_date = datetime.fromtimestamp(ex_div_ts)
+                        div_data.append({
+                            "Ticker": t,
+                            "Name": info.get("shortName", t),
+                            "Ex-Datum": ex_date,
+                            "Dividende": info.get("dividendRate", 0),
+                            "Rendite %": (info.get("dividendYield", 0) or 0) * 100,
+                            "Zukünftig": "✅ Ja" if ex_div_ts > now_ts else "⏳ Vorbei"
+                        })
+                except Exception:
+                    continue
+            
+            if div_data:
+                df_div = pd.DataFrame(div_data).sort_values("Ex-Datum")
+                df_div["Ex-Datum_Str"] = df_div["Ex-Datum"].dt.strftime("%d.%m.%Y")
+                df_div["Dividende"] = df_div["Dividende"].apply(lambda x: f"{x:.2f}")
+                df_div["Rendite %"] = df_div["Rendite %"].apply(lambda x: f"{x:.2f} %")
+                
+                show_cols = ["Ticker", "Name", "Ex-Datum_Str", "Dividende", "Rendite %", "Zukünftig"]
+                st.dataframe(df_div[show_cols].rename(columns={"Ex-Datum_Str": "Ex-Datum"}), use_container_width=True, hide_index=True)
+                st.info("💡 **Erklärung:** Du musst die Aktie spätestens am Tag VOR dem Ex-Datum kaufen.")
+            else:
+                st.success("Keine anstehenden Ex-Dividenden-Tage gefunden.")
