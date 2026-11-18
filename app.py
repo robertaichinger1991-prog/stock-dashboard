@@ -32,6 +32,15 @@ st.markdown(
         padding: 18px;
         margin-bottom: 14px;
     }
+    .fred-card {
+        background-color: #161B22;
+        border: 1px solid #30363D;
+        border-radius: 10px;
+        padding: 16px 18px;
+        margin-bottom: 14px;
+        min-height: 225px;
+        line-height: 1.55;
+    }
     .badge-green {
         background-color: rgba(0, 200, 83, 0.16);
         color: #00E676;
@@ -39,7 +48,7 @@ st.markdown(
         padding: 4px 12px;
         border-radius: 12px;
         font-weight: 600;
-        font-size: 0.88rem;
+        font-size: 0.86rem;
     }
     .badge-red {
         background-color: rgba(255, 82, 82, 0.16);
@@ -48,7 +57,7 @@ st.markdown(
         padding: 4px 12px;
         border-radius: 12px;
         font-weight: 600;
-        font-size: 0.88rem;
+        font-size: 0.86rem;
     }
     .badge-amber {
         background-color: rgba(255, 179, 0, 0.16);
@@ -57,21 +66,41 @@ st.markdown(
         padding: 4px 12px;
         border-radius: 12px;
         font-weight: 600;
-        font-size: 0.88rem;
+        font-size: 0.86rem;
     }
     .info-box {
         background-color: #161B22;
         border-left: 4px solid #58A6FF;
-        padding: 14px 18px;
+        padding: 15px 18px;
         border-radius: 6px;
         margin: 10px 0;
-        font-size: 0.94rem;
-        line-height: 1.55;
+        font-size: 0.95rem;
+        line-height: 1.6;
+    }
+    .entry-box {
+        background-color: #161B22;
+        border: 1px solid #30363D;
+        border-left: 4px solid #00E676;
+        padding: 15px 18px;
+        border-radius: 8px;
+        margin: 10px 0;
+        font-size: 0.95rem;
+        line-height: 1.6;
+    }
+    .target-box {
+        background-color: #161B22;
+        border: 1px solid #30363D;
+        border-left: 4px solid #FFB300;
+        padding: 15px 18px;
+        border-radius: 8px;
+        margin: 10px 0;
+        font-size: 0.95rem;
+        line-height: 1.6;
     }
     .verdict-box {
         background-color: #161B22;
         border: 1px solid #30363D;
-        border-left: 5px solid #00E676;
+        border-left: 5px solid #58A6FF;
         padding: 16px 20px;
         border-radius: 8px;
         margin: 12px 0;
@@ -434,7 +463,7 @@ def leite_waehrung_aus_ticker_ab(ticker: str) -> str:
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def hole_stammdaten(ticker: str) -> dict:
-    """Holt den vollen Firmennamen, die Heimatwährung, Sektor, Dividende und nächsten Quartalszahlen-Termin."""
+    """Holt Firmennamen, Währung, Sektor, Analysten-Kursziele, Dividende und Earnings-Datum."""
     standard_waehrung = leite_waehrung_aus_ticker_ab(ticker)
     info_daten = {
         "name": ticker,
@@ -445,6 +474,11 @@ def hole_stammdaten(ticker: str) -> dict:
         "div_rate_orig": 0.0,
         "ex_div_datum": None,
         "payout_ratio_pct": None,
+        "target_mean_orig": None,
+        "target_high_orig": None,
+        "target_low_orig": None,
+        "analysten_anzahl": 0,
+        "analysten_urteil": None,
     }
 
     for _, (tkr, vollname) in BEKANNTE_AKTIEN_NAMEN.items():
@@ -462,9 +496,20 @@ def hole_stammdaten(ticker: str) -> dict:
         if info.get("sector"):
             info_daten["sektor"] = info.get("sector")
 
+        # Analysten-Kursziele
+        if info.get("targetMeanPrice"):
+            info_daten["target_mean_orig"] = float(info["targetMeanPrice"])
+        if info.get("targetHighPrice"):
+            info_daten["target_high_orig"] = float(info["targetHighPrice"])
+        if info.get("targetLowPrice"):
+            info_daten["target_low_orig"] = float(info["targetLowPrice"])
+        if info.get("numberOfAnalystOpinions"):
+            info_daten["analysten_anzahl"] = int(info["numberOfAnalystOpinions"])
+        if info.get("recommendationKey"):
+            info_daten["analysten_urteil"] = str(info["recommendationKey"]).upper()
+
         div_yield = info.get("dividendYield")
         if div_yield is not None:
-            # yfinance liefert teils 0.035 (3.5%) oder bereits 3.5
             info_daten["div_rendite_pct"] = round(div_yield * 100, 2) if div_yield < 0.35 else round(div_yield, 2)
 
         if info.get("dividendRate"):
@@ -493,15 +538,22 @@ def hole_stammdaten(ticker: str) -> dict:
 
 
 # ==============================================================================
-# FRED REZESSIONS-BAROMETER (OHNE API-KEY – 6 MAKRO-INDIKATOREN)
+# FRED REZESSIONS-BAROMETER (OHNE API-KEY – ALLE 6 MAKRO-INDIKATOREN IM DETAIL)
 # ==============================================================================
 @st.cache_data(ttl=21600, show_spinner=False)
 def hole_fred_serie(series_id: str) -> pd.Series:
     """Lädt eine historische Wirtschaftsreihe direkt von der US-Notenbank FRED (ohne API-Key)."""
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
     try:
-        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
-        if resp.status_code != 200 or not resp.text:
+        resp = requests.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "text/csv,text/plain,*/*",
+            },
+            timeout=10,
+        )
+        if resp.status_code != 200 or not resp.text or "<html" in resp.text.lower():
             return pd.Series(dtype=float)
         df = pd.read_csv(io.StringIO(resp.text))
         if df.shape[1] < 2:
@@ -519,10 +571,11 @@ def hole_fred_serie(series_id: str) -> pd.Series:
 @st.cache_data(ttl=21600, show_spinner=False)
 def berechne_rezessions_barometer() -> dict:
     """
-    Analysiert 6 zentrale US-Notenbank-Indikatoren (FRED) via Ampelsystem und berechnet
-    einen Rezessions-Risiko-Score von 0 bis 100 inklusive Strategie-Empfehlung.
+    Analysiert alle 6 zentralen US-Notenbank-Indikatoren (FRED) mit ausführlichen
+    Erklärungen, Schwellenwerten, Ampel-Logik und Portfolio-Empfehlungen.
     """
-    indikatoren = []
+    detail_karten = []
+    tabellen_zeilen = []
     risiko_punkte = 0
     verfuegbare_gewichte = 0
 
@@ -534,146 +587,316 @@ def berechne_rezessions_barometer() -> dict:
         stand = sahm.index[-1].strftime("%m/%Y")
         if v >= 0.50:
             risiko_punkte += 25
-            ampel, bewertung = "🔴 Warnsignal", "Über 0,50 %-Schwelle – historisch starkes Rezessionssignal"
+            ampel_farbe, ampel_text = "red", "🔴 Warnsignal (Rezessions-Trigger ausgelöst)"
+            status_detail = (
+                f"Mit aktuell <b>{v:.2f} %-Punkten</b> liegt die Sahm-Regel über der kritischen Marke von 0,50 %-Punkten. "
+                "In jedem US-Konjunkturzyklus seit 1970 ging das Überschreiten dieser Schwelle mit einer Rezession einher."
+            )
         elif v >= 0.30:
             risiko_punkte += 14
-            ampel, bewertung = "🟡 Beobachtung", "Leicht erhöht – Arbeitsmarkt verliert etwas an Schwung"
+            ampel_farbe, ampel_text = "amber", "🟡 Beobachtung (Leicht erhöht)"
+            status_detail = (
+                f"Der Wert steht bei <b>{v:.2f} %-Punkten</b> und nähert sich langsam der Warnschwelle (0,50). "
+                "Der US-Arbeitsmarkt kühlt spürbar ab, befindet sich aber noch nicht im akuten Rezessionsbereich."
+            )
         else:
             risiko_punkte += 2
-            ampel, bewertung = "🟢 Entspannt", "Deutlich unter der kritischen 0,50 %-Schwelle"
-        indikatoren.append({
-            "Indikator": "1. Sahm-Regel (Arbeitsmarkt-Trigger)",
-            "Aktuell": f"{v:.2f} %-Pkt.",
-            "Schwelle": "≥ 0,50 %-Pkt.",
-            "Ampel": ampel,
-            "Stand": stand,
-            "Einschätzung": bewertung,
-        })
+            ampel_farbe, ampel_text = "green", "🟢 Entspannt (Unter Schwelle)"
+            status_detail = (
+                f"Mit <b>{v:.2f} %-Punkten</b> liegt der Indikator deutlich unter der Warnschwelle von 0,50 %-Punkten. "
+                "Der Arbeitsmarkt zeigt aktuell keinen plötzlichen Einbruch."
+            )
+    else:
+        v, stand = 0.23, "Fallback"
+        ampel_farbe, ampel_text = "green", "🟢 Entspannt (Richtwert)"
+        status_detail = "FRED-Liveabruf kurzzeitig nicht erreichbar – Richtwert unterhalb der 0,50 %-Schwelle."
+
+    detail_karten.append({
+        "titel": "1. Sahm-Regel (Arbeitsmarkt-Trigger)",
+        "code": "FRED: SAHMREALTIME",
+        "wert": f"{v:.2f} %-Punkte",
+        "schwelle": "Kritisch ab ≥ 0,50 %-Punkte",
+        "stand": stand,
+        "ampel_farbe": ampel_farbe,
+        "ampel_text": ampel_text,
+        "was_ist_das": "Misst den Anstieg des 3-Monats-Durchschnitts der US-Arbeitslosenquote gegenüber dem tiefsten Wert der letzten 12 Monate.",
+        "bewertung": status_detail,
+    })
+    tabellen_zeilen.append({
+        "Indikator": "1. Sahm-Regel (SAHMREALTIME)",
+        "Aktueller Wert": f"{v:.2f} %-Pkt.",
+        "Kritische Schwelle": "≥ 0,50 %-Pkt.",
+        "Ampel": ampel_text,
+        "Stand": stand,
+    })
 
     # 2. 10J–2J US-Zinskurve (T10Y2Y) – Gewicht: 20 Punkte
     t10y2y = hole_fred_serie("T10Y2Y")
     if not t10y2y.empty:
         verfuegbare_gewichte += 20
-        v = float(t10y2y.iloc[-1])
+        v2 = float(t10y2y.iloc[-1])
         min_18m = float(t10y2y.tail(380).min())
-        stand = t10y2y.index[-1].strftime("%d.%m.%Y")
-        if v < 0.0:
+        stand2 = t10y2y.index[-1].strftime("%d.%m.%Y")
+        if v2 < 0.0:
             risiko_punkte += 18
-            ampel, bewertung = "🔴 Warnsignal", "Inverse Zinskurve (< 0 %) – klassisches Frühwarnsignal"
-        elif min_18m < -0.10 and v >= 0.0:
+            ampel_farbe2, ampel_text2 = "red", "🔴 Warnsignal (Inverse Zinskurve)"
+            status_detail2 = (
+                f"Der Zinsabstand beträgt <b>{v2:+.2f} %</b> (negativ). Kurzfristige Anleihen werfen mehr ab als 10-jährige – "
+                "ein historisch sehr zuverlässiges Frühwarnsignal für eine bevorstehende Konjunkturabkühlung."
+            )
+        elif min_18m < -0.10 and v2 >= 0.0:
             risiko_punkte += 12
-            ampel, bewertung = "🟡 Beobachtung", "Re-Steepening nach Inversion – Übergangsphase genau beobachten"
+            ampel_farbe2, ampel_text2 = "amber", "🟡 Beobachtung (Re-Steepening nach Inversion)"
+            status_detail2 = (
+                f"Der Spread liegt bei <b>{v2:+.2f} %</b>, nachdem die Kurve zuvor invertiert war. Historisch beginnt die "
+                "eigentliche Wirtschaftsflaute oft erst dann, wenn die Zinskurve nach einer Inversion wieder ins Plus dreht."
+            )
         else:
             risiko_punkte += 3
-            ampel, bewertung = "🟢 Entspannt", "Normale, positiv geneigte Zinskurve"
-        indikatoren.append({
-            "Indikator": "2. Zinskurve (10J minus 2J US-Staatsanleihen)",
-            "Aktuell": f"{v:+.2f} %",
-            "Schwelle": "< 0,00 % (Invers)",
-            "Ampel": ampel,
-            "Stand": stand,
-            "Einschätzung": bewertung,
-        })
+            ampel_farbe2, ampel_text2 = "green", "🟢 Entspannt (Normale Zinskurve)"
+            status_detail2 = (
+                f"Mit <b>{v2:+.2f} %</b> ist die Zinskurve normal und positiv geneigt. Langfristige Investitionen werden "
+                "wieder höher verzinst als kurzfristige Gelder."
+            )
+    else:
+        v2, stand2 = 0.25, "Fallback"
+        ampel_farbe2, ampel_text2 = "amber", "🟡 Beobachtung (Richtwert)"
+        status_detail2 = "FRED-Liveabruf kurzzeitig nicht erreichbar – Richtwert im leicht positiven Bereich."
 
-    # 3. 10J–3M US-Zinskurve (T10Y3M) – Gewicht: 15 Punkte
+    detail_karten.append({
+        "titel": "2. US-Zinskurve (10 Jahre minus 2 Jahre)",
+        "code": "FRED: T10Y2Y",
+        "wert": f"{v2:+.2f} %",
+        "schwelle": "Kritisch bei < 0,00 % (Inversion)",
+        "stand": stand2,
+        "ampel_farbe": ampel_farbe2,
+        "ampel_text": ampel_text2,
+        "was_ist_das": "Vergleicht die Rendite 10-jähriger US-Staatsanleihen mit 2-jährigen Anleihen. Eine Inversion (< 0 %) ging fast jeder US-Rezession 12–18 Monate voraus.",
+        "bewertung": status_detail2,
+    })
+    tabellen_zeilen.append({
+        "Indikator": "2. Zinskurve 10J–2J (T10Y2Y)",
+        "Aktueller Wert": f"{v2:+.2f} %",
+        "Kritische Schwelle": "< 0,00 %",
+        "Ampel": ampel_text2,
+        "Stand": stand2,
+    })
+
+    # 3. 10J–3M US-Zinskurve (T10Y3M, Fallback über Yahoo ^TNX & ^IRX) – Gewicht: 15 Punkte
     t10y3m = hole_fred_serie("T10Y3M")
+    if t10y3m.empty:
+        try:
+            tnx = bereinige_dataframe(yf.download("^TNX", period="1mo", interval="1d", progress=False))
+            irx = bereinige_dataframe(yf.download("^IRX", period="1mo", interval="1d", progress=False))
+            if not tnx.empty and not irx.empty:
+                diff_s = (tnx["Close"] - irx["Close"]).dropna()
+                t10y3m = diff_s
+        except Exception:
+            pass
+
     if not t10y3m.empty:
         verfuegbare_gewichte += 15
-        v = float(t10y3m.iloc[-1])
-        stand = t10y3m.index[-1].strftime("%d.%m.%Y")
-        if v < 0.0:
+        v3 = float(t10y3m.iloc[-1])
+        stand3 = t10y3m.index[-1].strftime("%d.%m.%Y")
+        if v3 < 0.0:
             risiko_punkte += 14
-            ampel, bewertung = "🔴 Warnsignal", "Kurzfristzinsen über Langfristzinsen – Geldpolitik wirkt bremsend"
-        elif v < 0.40:
+            ampel_farbe3, ampel_text3 = "red", "🔴 Warnsignal (Restriktive Fed-Zinsen)"
+            status_detail3 = (
+                f"Der Abstand zwischen 10-jährigen und 3-monatigen US-Zinsen liegt bei <b>{v3:+.2f} %</b>. "
+                "Das von der US-Notenbank Fed bevorzugte Rezessionsmodell signalisiert damit spürbaren Bremsdruck."
+            )
+        elif v3 < 0.45:
             risiko_punkte += 7
-            ampel, bewertung = "🟡 Beobachtung", "Flache Zinsstruktur – konjunkturelle Abkühlung möglich"
+            ampel_farbe3, ampel_text3 = "amber", "🟡 Beobachtung (Flache Zinsstruktur)"
+            status_detail3 = (
+                f"Mit <b>{v3:+.2f} %</b> ist der Zinsabstand noch recht flach. Die Geldpolitik wirkt neutral bis leicht bremsend."
+            )
         else:
             risiko_punkte += 2
-            ampel, bewertung = "🟢 Entspannt", "Gesunder Zinsabstand unterstützt Kreditvergabe"
-        indikatoren.append({
-            "Indikator": "3. Fed-Zinsstruktur (10J minus 3M)",
-            "Aktuell": f"{v:+.2f} %",
-            "Schwelle": "< 0,00 %",
-            "Ampel": ampel,
-            "Stand": stand,
-            "Einschätzung": bewertung,
-        })
+            ampel_farbe3, ampel_text3 = "green", "🟢 Entspannt (Gesunder Zinsabstand)"
+            status_detail3 = (
+                f"Mit <b>{v3:+.2f} %</b> notieren langfristige Renditen klar über dem Geldmarktzins – Banken und Kreditmärkte arbeiten normal."
+            )
+    else:
+        v3, stand3 = 0.15, "Fallback"
+        ampel_farbe3, ampel_text3 = "amber", "🟡 Beobachtung (Richtwert)"
+        status_detail3 = "Liveabruf kurzzeitig nicht erreichbar."
+
+    detail_karten.append({
+        "titel": "3. Fed-Zinsstruktur (10 Jahre minus 3 Monate)",
+        "code": "FRED: T10Y3M",
+        "wert": f"{v3:+.2f} %",
+        "schwelle": "Kritisch bei < 0,00 %",
+        "stand": stand3,
+        "ampel_farbe": ampel_farbe3,
+        "ampel_text": ampel_text3,
+        "was_ist_das": "Der bevorzugte Zinsindikator der Federal Reserve: Misst die Spannung zwischen dem aktuellen Leitzinsniveau (3 Monate) und den langfristigen Wachstumserwartungen (10 Jahre).",
+        "bewertung": status_detail3,
+    })
+    tabellen_zeilen.append({
+        "Indikator": "3. Fed-Zinsstruktur 10J–3M (T10Y3M)",
+        "Aktueller Wert": f"{v3:+.2f} %",
+        "Kritische Schwelle": "< 0,00 %",
+        "Ampel": ampel_text3,
+        "Stand": stand3,
+    })
 
     # 4. US-Arbeitslosenquote (UNRATE) – Gewicht: 15 Punkte
     unrate = hole_fred_serie("UNRATE")
     if not unrate.empty and len(unrate) >= 13:
         verfuegbare_gewichte += 15
-        v = float(unrate.iloc[-1])
+        v4 = float(unrate.iloc[-1])
         vor_12m = float(unrate.iloc[-13])
-        diff_12m = v - vor_12m
-        stand = unrate.index[-1].strftime("%m/%Y")
-        if diff_12m >= 0.5 or v >= 5.0:
+        diff_12m = v4 - vor_12m
+        stand4 = unrate.index[-1].strftime("%m/%Y")
+        if diff_12m >= 0.5 or v4 >= 5.0:
             risiko_punkte += 14
-            ampel, bewertung = "🔴 Warnsignal", f"Spürbarer Anstieg um {diff_12m:+.1f} %-Pkt. gegenüber Vorjahr"
+            ampel_farbe4, ampel_text4 = "red", "🔴 Warnsignal (Arbeitslosigkeit steigt deutlich)"
+            status_detail4 = (
+                f"Die Quote liegt bei <b>{v4:.1f} %</b> und ist im Jahresvergleich um <b>{diff_12m:+.1f} %-Punkte</b> gestiegen. "
+                "Steigende Arbeitslosigkeit dämpft direkt den privaten Konsum (rund 70 % der US-Wirtschaft)."
+            )
         elif diff_12m >= 0.2:
             risiko_punkte += 8
-            ampel, bewertung = "🟡 Beobachtung", f"Leichter Anstieg ({diff_12m:+.1f} %-Pkt. YoY), aber historisch moderat"
+            ampel_farbe4, ampel_text4 = "amber", "🟡 Beobachtung (Leichter Aufwärtstrend)"
+            status_detail4 = (
+                f"Mit <b>{v4:.1f} %</b> ({diff_12m:+.1f} %-Punkte gegenüber Vorjahr) bleibt das Niveau zwar historisch niedrig, "
+                "aber die Dynamik am Stellenmarkt hat sich merklich verlangsamt."
+            )
         else:
             risiko_punkte += 2
-            ampel, bewertung = "🟢 Entspannt", f"Stabiler Arbeitsmarkt ({diff_12m:+.1f} %-Pkt. gegenüber Vorjahr)"
-        indikatoren.append({
-            "Indikator": "4. US-Arbeitslosenquote (UNRATE)",
-            "Aktuell": f"{v:.1f} %",
-            "Schwelle": "+0,5 %-Pkt. YoY",
-            "Ampel": ampel,
-            "Stand": stand,
-            "Einschätzung": bewertung,
-        })
+            ampel_farbe4, ampel_text4 = "green", "🟢 Entspannt (Stabiler Arbeitsmarkt)"
+            status_detail4 = (
+                f"Die Arbeitslosenquote liegt bei soliden <b>{v4:.1f} %</b> ({diff_12m:+.1f} %-Punkte zum Vorjahr) – "
+                "Verbraucher verfügen über stabile Einkommen."
+            )
+    else:
+        v4, diff_12m, stand4 = 4.1, 0.1, "Fallback"
+        ampel_farbe4, ampel_text4 = "green", "🟢 Entspannt (Richtwert)"
+        status_detail4 = "Stabile US-Beschäftigungslage."
+
+    detail_karten.append({
+        "titel": "4. US-Arbeitslosenquote (UNRATE)",
+        "code": "FRED: UNRATE",
+        "wert": f"{v4:.1f} % ({diff_12m:+.1f} % YoY)",
+        "schwelle": "Kritisch ab +0,5 %-Pkt. YoY / ≥ 5,0 %",
+        "stand": stand4,
+        "ampel_farbe": ampel_farbe4,
+        "ampel_text": ampel_text4,
+        "was_ist_das": "Offizielle US-Arbeitslosenquote und ihre Veränderung gegenüber dem Vorjahr. Ein schneller Anstieg löst eine Abwärtsspirale aus Konsumrückgang und Entlassungen aus.",
+        "bewertung": status_detail4,
+    })
+    tabellen_zeilen.append({
+        "Indikator": "4. US-Arbeitslosenquote (UNRATE)",
+        "Aktueller Wert": f"{v4:.1f} % ({diff_12m:+.1f} % YoY)",
+        "Kritische Schwelle": "+0,5 %-Pkt. YoY",
+        "Ampel": ampel_text4,
+        "Stand": stand4,
+    })
 
     # 5. High-Yield Credit Spread (BAMLH0A0HYM2) – Gewicht: 15 Punkte
     hy = hole_fred_serie("BAMLH0A0HYM2")
     if not hy.empty:
         verfuegbare_gewichte += 15
-        v = float(hy.iloc[-1])
-        stand = hy.index[-1].strftime("%d.%m.%Y")
-        if v >= 5.0:
+        v5 = float(hy.iloc[-1])
+        stand5 = hy.index[-1].strftime("%d.%m.%Y")
+        if v5 >= 5.0:
             risiko_punkte += 15
-            ampel, bewertung = "🔴 Warnsignal", "Hoher Kreditstress – Risikoaufschläge für Firmen deutlich gestiegen"
-        elif v >= 3.8:
+            ampel_farbe5, ampel_text5 = "red", "🔴 Warnsignal (Hoher Kreditstress)"
+            status_detail5 = (
+                f"Der Risikoaufschlag liegt bei <b>{v5:.2f} %</b> (über 5,00 %). Investoren verlangen massive Prämien für "
+                "Unternehmensanleihen – ein Zeichen für akute Ausfallängste und teure Refinanzierung."
+            )
+        elif v5 >= 3.8:
             risiko_punkte += 8
-            ampel, bewertung = "🟡 Beobachtung", "Leicht erhöhte Risikoaufschläge am Anleihemarkt"
+            ampel_farbe5, ampel_text5 = "amber", "🟡 Beobachtung (Leicht erhöht)"
+            status_detail5 = (
+                f"Mit <b>{v5:.2f} %</b> ziehen die Risikoaufschläge leicht an. Noch keine Panik am Kreditmarkt, "
+                "aber hochverschuldete Unternehmen geraten zunehmend unter Druck."
+            )
         else:
             risiko_punkte += 2
-            ampel, bewertung = "🟢 Entspannt", "Niedrige Risikoaufschläge – Anleihemarkt signalisiert Ruhe"
-        indikatoren.append({
-            "Indikator": "5. High-Yield Credit Spread (Kreditrisiko)",
-            "Aktuell": f"{v:.2f} %",
-            "Schwelle": "≥ 5,00 %",
-            "Ampel": ampel,
-            "Stand": stand,
-            "Einschätzung": bewertung,
-        })
+            ampel_farbe5, ampel_text5 = "green", "🟢 Entspannt (Niedrige Risikoaufschläge)"
+            status_detail5 = (
+                f"Mit nur <b>{v5:.2f} %</b> signalisiert der Anleihemarkt hohe Ruhe. Unternehmen können sich problemlos "
+                "und günstig refinanzieren."
+            )
+    else:
+        v5, stand5 = 3.10, "Fallback"
+        ampel_farbe5, ampel_text5 = "green", "🟢 Entspannt (Richtwert)"
+        status_detail5 = "Anleihemärkte ohne akuten Kreditstress."
+
+    detail_karten.append({
+        "titel": "5. High-Yield Credit Spread (Kreditrisiko)",
+        "code": "FRED: BAMLH0A0HYM2",
+        "wert": f"{v5:.2f} %",
+        "schwelle": "Kritisch ab ≥ 5,00 %",
+        "stand": stand5,
+        "ampel_farbe": ampel_farbe5,
+        "ampel_text": ampel_text5,
+        "was_ist_das": "Zinsaufschlag, den schwächer bewertete US-Unternehmen gegenüber sicheren Staatsanleihen zahlen müssen. Reagiert oft früher als der Aktienmarkt auf Finanzkrisen.",
+        "bewertung": status_detail5,
+    })
+    tabellen_zeilen.append({
+        "Indikator": "5. High-Yield Credit Spread",
+        "Aktueller Wert": f"{v5:.2f} %",
+        "Kritische Schwelle": "≥ 5,00 %",
+        "Ampel": ampel_text5,
+        "Stand": stand5,
+    })
 
     # 6. US-Industrieproduktion YoY (INDPRO) – Gewicht: 10 Punkte
     indpro = hole_fred_serie("INDPRO")
     if not indpro.empty and len(indpro) >= 13:
         verfuegbare_gewichte += 10
-        v = float(indpro.iloc[-1])
-        vor_12m = float(indpro.iloc[-13])
-        yoy_pct = ((v - vor_12m) / vor_12m) * 100 if vor_12m > 0 else 0.0
-        stand = indpro.index[-1].strftime("%m/%Y")
+        v6 = float(indpro.iloc[-1])
+        vor_12m6 = float(indpro.iloc[-13])
+        yoy_pct = ((v6 - vor_12m6) / vor_12m6) * 100 if vor_12m6 > 0 else 0.0
+        stand6 = indpro.index[-1].strftime("%m/%Y")
         if yoy_pct <= -1.5:
             risiko_punkte += 10
-            ampel, bewertung = "🔴 Warnsignal", "Industrieproduktion schrumpft spürbar im Jahresvergleich"
+            ampel_farbe6, ampel_text6 = "red", "🔴 Warnsignal (Industrie schrumpft)"
+            status_detail6 = (
+                f"Die US-Industrieproduktion liegt <b>{yoy_pct:+.2f} %</b> unter dem Vorjahresniveau. "
+                "Ein Rückgang von mehr als 1,5 % deutet auf sinkende Auftragseingänge und fallende Unternehmensgewinne hin."
+            )
         elif yoy_pct < 0.5:
             risiko_punkte += 5
-            ampel, bewertung = "🟡 Beobachtung", "Stagnierende Industrieproduktion – verhaltenes Wachstum"
+            ampel_farbe6, ampel_text6 = "amber", "🟡 Beobachtung (Stagnation)"
+            status_detail6 = (
+                f"Mit <b>{yoy_pct:+.2f} %</b> gegenüber dem Vorjahr tritt die Industrie auf der Stelle – "
+                "weder Boom noch akuter Einbruch."
+            )
         else:
             risiko_punkte += 1
-            ampel, bewertung = "🟢 Entspannt", "Industrieproduktion wächst solide im Jahresvergleich"
-        indikatoren.append({
-            "Indikator": "6. US-Industrieproduktion (Jahresrate)",
-            "Aktuell": f"{yoy_pct:+.2f} %",
-            "Schwelle": "≤ -1,50 % YoY",
-            "Ampel": ampel,
-            "Stand": stand,
-            "Einschätzung": bewertung,
-        })
+            ampel_farbe6, ampel_text6 = "green", "🟢 Entspannt (Solides Wachstum)"
+            status_detail6 = (
+                f"Die Industrieproduktion wächst um <b>{yoy_pct:+.2f} %</b> im Jahresvergleich und stützt damit "
+                "die Gewinne zyklischer Unternehmen."
+            )
+    else:
+        yoy_pct, stand6 = 0.8, "Fallback"
+        ampel_farbe6, ampel_text6 = "green", "🟢 Entspannt (Richtwert)"
+        status_detail6 = "Industrieproduktion im leicht positiven Bereich."
+
+    detail_karten.append({
+        "titel": "6. US-Industrieproduktion (Jahresrate)",
+        "code": "FRED: INDPRO",
+        "wert": f"{yoy_pct:+.2f} % YoY",
+        "schwelle": "Kritisch ab ≤ -1,50 % YoY",
+        "stand": stand6,
+        "ampel_farbe": ampel_farbe6,
+        "ampel_text": ampel_text6,
+        "was_ist_das": "Misst den realen Output von Fabriken, Bergbau und Energieversorgern im Vergleich zum Vorjahresmonat – ein harter Konjunktur-Gradmesser ohne Preiseffekte.",
+        "bewertung": status_detail6,
+    })
+    tabellen_zeilen.append({
+        "Indikator": "6. US-Industrieproduktion (INDPRO)",
+        "Aktueller Wert": f"{yoy_pct:+.2f} % YoY",
+        "Kritische Schwelle": "≤ -1,50 % YoY",
+        "Ampel": ampel_text6,
+        "Stand": stand6,
+    })
 
     if verfuegbare_gewichte > 0:
         score = int(np.clip(round((risiko_punkte / verfuegbare_gewichte) * 100), 5, 95))
@@ -681,34 +904,42 @@ def berechne_rezessions_barometer() -> dict:
         score = 28
 
     if score < 35:
-        ampel_gesamt = "🟢 NIEDRIGES REZESSIONSRISIKO (Expansion)"
+        ampel_gesamt = "🟢 NIEDRIGES REZESSIONSRISIKO (Wachstums- & Expansionsphase)"
         strategie = (
-            "<b>Wachstum & Trend-Follower bevorzugen:</b> Die Konjunkturdaten und Kreditmärkte zeigen keine akute "
-            "Rezessionsgefahr. Zyklische Qualitätsaktien, Tech-Führer und Golden-Cross-Signale haben Rückenwind. "
-            "Normale Positionsgrößen mit regulärem ATR-Stop-Loss sind gut vertretbar."
+            "<b>1. Aktienquote & Ausrichtung:</b> Volle Investitionsquote (85–100 %) vertretbar. Fokus auf Trend-Follower, "
+            "Golden-Cross-Ausbrüche, Technologie, Halbleiter und zyklische Marktführer.<br>"
+            "<b>2. Einstiege & Risikomanagement:</b> Rücksetzer an die 50-Tage-Linie (SMA 50) aktiv als Kaufchance nutzen; "
+            "regulärer ATR-Stop-Loss (2× ATR) reicht zur Absicherung aus.<br>"
+            "<b>3. Cash-Reserve:</b> 5–15 % taktische Reserve für spontane Chancen."
         )
     elif score < 62:
-        ampel_gesamt = "🟡 ERHÖHTE AUFMERKSAMKEIT (Spätzyklische Phase)"
+        ampel_gesamt = "🟡 ERHÖHTE AUFMERKSAMKEIT (Spätzyklische Übergangsphase)"
         strategie = (
-            "<b>Qualität & selektive Einstiege kombinieren:</b> Einzelne Frühindikatoren mahnen zur Vorsicht, aber ein "
-            "breiter Wirtschaftsabschwung ist nicht bestätigt. Setze auf bilanzstarke Marktführer, gestaffelte "
-            "Teilkäufe bei Turnaround-Chancen (TFA) und halte ca. 10–20 % Cash-Reserve für Rücksetzer bereit."
+            "<b>1. Aktienquote & Ausrichtung:</b> Selektiv vorgehen (70–85 % investiert). Qualitätsaktien mit hoher "
+            "Preissetzungsmacht, starken Bilanzen und nachhaltigen Dividenden bevorzugen.<br>"
+            "<b>2. Einstiege & Risikomanagement:</b> Keine überkauften Kurse (RSI > 70) jagen; Einstiege auf zwei Tranchen "
+            "aufteilen und auf Turnaround-Signale (TFA) mit engem Stop-Loss achten.<br>"
+            "<b>3. Cash-Reserve:</b> 15–30 % Cash bereithalten, um bei Marktkorrekturen günstig zuzukaufen."
         )
     else:
-        ampel_gesamt = "🔴 ERHÖHTES REZESSIONSRISIKO (Defensiv-Modus)"
+        ampel_gesamt = "🔴 ERHÖHTES REZESSIONSRISIKO (Kapitalschutz & Defensiv-Modus)"
         strategie = (
-            "<b>Kapitalschutz & Defensive priorisieren:</b> Mehrere Makro-Indikatoren signalisieren deutlichen "
-            "Konjunkturgegenwind. Ziehe Stop-Loss-Marken eng nach, reduziere hochverschuldete Zykliker und "
-            "bevorzuge defensive Sektoren (Gesundheit, Basiskonsum, Versorger) sowie eine höhere Cash-Quote."
+            "<b>1. Aktienquote & Ausrichtung:</b> Risiko reduzieren (50–65 % Aktienquote). Hochverschuldete Zykliker abbauen "
+            "und auf defensive Branchen (Gesundheit, Basiskonsum, Versorger) umschichten.<br>"
+            "<b>2. Einstiege & Risikomanagement:</b> Gewinne konsequent mit engen Stop-Loss-Marken absichern. Neue Käufe erst "
+            "nach klarer Bodenbildung und positiver Sahm-/Kreditmarkt-Entspannung.<br>"
+            "<b>3. Cash-Reserve:</b> 35–50 % Liquidität zum Schutz vor stärkeren Drawdowns."
         )
 
     return {
         "score": score,
         "ampel_gesamt": ampel_gesamt,
         "strategie": strategie,
-        "tabelle": pd.DataFrame(indikatoren),
+        "detail_karten": detail_karten,
+        "tabelle": pd.DataFrame(tabellen_zeilen),
         "sahm_serie": sahm.tail(60) if not sahm.empty else pd.Series(dtype=float),
         "zinskurve_serie": t10y2y.tail(750) if not t10y2y.empty else pd.Series(dtype=float),
+        "hy_serie": hy.tail(750) if not hy.empty else pd.Series(dtype=float),
     }
 
 
@@ -761,13 +992,18 @@ def lade_kursdaten_eur(ticker: str, zeitraum: str = "1y") -> pd.DataFrame:
 
 
 def analysiere_aktie(ticker: str) -> dict | None:
-    """Erstellt eine vollständige, ausführlich begründete Auswertung in Euro (€)."""
+    """
+    Erstellt eine ausführliche Analyse in Euro (€) inklusive technischer & fundamentaler
+    Kursziele, konkreter Einstiegszonen (Pullback & Ausbruch) und detaillierter Begründung.
+    """
     df = lade_kursdaten_eur(ticker, zeitraum="1y")
     if df.empty or len(df) < 50:
         return None
 
     stamm = hole_stammdaten(ticker)
+    faktor = hole_wechselkurs_zu_eur(stamm["waehrung"])
     region = erkenne_region(ticker)
+
     aktuell = float(df["Close"].iloc[-1])
     vortag = float(df["Close"].iloc[-2])
     tages_diff_pct = ((aktuell - vortag) / vortag) * 100
@@ -793,9 +1029,105 @@ def analysiere_aktie(ticker: str) -> dict | None:
 
     hoch_52w = float(df["High"].max())
     tief_52w = float(df["Low"].min())
+    hoch_20t = float(df["High"].tail(20).max())
+    tief_20t = float(df["Low"].tail(20).min())
     abstand_hoch_pct = ((aktuell - hoch_52w) / hoch_52w) * 100
     abstand_tief_pct = ((aktuell - tief_52w) / tief_52w) * 100 if tief_52w > 0 else 0.0
 
+    # --------------------------------------------------------------------------
+    # KURSIZIELE (€) – TECHNISCH + ANALYSTEN-KONSENS
+    # --------------------------------------------------------------------------
+    # Kursziel 1: Kurz-/Mittelfristiges Widerstandsziel (52W-Hoch bzw. Ausbruchsprojektion)
+    if aktuell >= hoch_52w * 0.96:
+        kursziel_1_eur = round(hoch_52w + 2.5 * atr, 2)
+        kursziel_1_label = "Technisches Ausbruchsziel (+2,5× ATR über 52W-Hoch)"
+    else:
+        kursziel_1_eur = round(hoch_52w, 2)
+        kursziel_1_label = "52-Wochen-Hoch (Widerstandsziel)"
+    potenzial_1_pct = ((kursziel_1_eur - aktuell) / aktuell) * 100
+
+    # Kursziel 2: Analysten-Konsens in € (falls vorhanden), sonst Trendkanal-Projektion
+    analysten_mean_eur = (
+        round(stamm["target_mean_orig"] * faktor, 2)
+        if stamm["target_mean_orig"] and stamm["target_mean_orig"] > 0
+        else None
+    )
+    analysten_high_eur = (
+        round(stamm["target_high_orig"] * faktor, 2)
+        if stamm["target_high_orig"] and stamm["target_high_orig"] > 0
+        else None
+    )
+    analysten_low_eur = (
+        round(stamm["target_low_orig"] * faktor, 2)
+        if stamm["target_low_orig"] and stamm["target_low_orig"] > 0
+        else None
+    )
+
+    if analysten_mean_eur and analysten_mean_eur > aktuell * 0.60:
+        kursziel_2_eur = analysten_mean_eur
+        anz = stamm["analysten_anzahl"]
+        kursziel_2_label = f"Analysten-Konsens ({anz} Analysten)" if anz > 0 else "Analysten-Konsens"
+    else:
+        kursziel_2_eur = round(max(kursziel_1_eur * 1.12, aktuell + 4.0 * atr), 2)
+        kursziel_2_label = "Mittelfristiges Trendkanal-Ziel"
+    potenzial_2_pct = ((kursziel_2_eur - aktuell) / aktuell) * 100
+
+    # --------------------------------------------------------------------------
+    # KONKRETE EINSTIEGSCHANCEN / KAUFZONEN (€)
+    # --------------------------------------------------------------------------
+    stop_loss_eur = max(0.01, round(aktuell - 2.0 * atr, 2))
+    stop_puffer_pct = ((aktuell - stop_loss_eur) / aktuell) * 100
+
+    if aktuell > sma50:
+        # Aufwärtstrend: Idealer Pullback-Einstieg nahe SMA 50 oder 20-Tage-Tief
+        basis_support = max(sma50, tief_20t)
+        kaufzone_von = round(max(stop_loss_eur * 1.01, basis_support - 0.4 * atr), 2)
+        kaufzone_bis = round(min(aktuell * 0.995, basis_support + 0.5 * atr), 2)
+        if kaufzone_von >= kaufzone_bis:
+            kaufzone_von = round(aktuell - 1.2 * atr, 2)
+            kaufzone_bis = round(aktuell - 0.4 * atr, 2)
+        ausbruch_trigger = round(hoch_20t + 0.2 * atr, 2)
+        einstieg_kurz = f"{kaufzone_von:.2f} – {kaufzone_bis:.2f} €"
+        einstieg_strategie_text = (
+            f"<b>1. Idealer Rücksetzer (Pullback-Kaufzone):</b> <b>{kaufzone_von:.2f} € bis {kaufzone_bis:.2f} €</b> "
+            f"(Unterstützungsbereich nahe SMA 50 / 20-Tage-Tief). Hier stimmt das Chance-Risiko-Verhältnis am besten.<br>"
+            f"<b>2. Ausbruchs-Einstieg (Momentum-Trigger):</b> Bei Tagesschlusskurs über <b>{ausbruch_trigger:.2f} €</b> "
+            f"unter erhöhtem Volumen bietet sich ein prozyklischer Einstieg an."
+        )
+    elif aktuell >= sma200:
+        # Zwischen SMA 200 und SMA 50
+        kaufzone_von = round(max(stop_loss_eur * 1.01, sma200 - 0.3 * atr), 2)
+        kaufzone_bis = round(sma200 + 0.6 * atr, 2)
+        if kaufzone_von >= kaufzone_bis:
+            kaufzone_von = round(aktuell * 0.96, 2)
+            kaufzone_bis = round(aktuell * 0.99, 2)
+        ausbruch_trigger = round(sma50 + 0.25 * atr, 2)
+        einstieg_kurz = f"{kaufzone_von:.2f} – {kaufzone_bis:.2f} € (oder > {ausbruch_trigger:.2f} €)"
+        einstieg_strategie_text = (
+            f"<b>1. Unterstützungs-Zone (nahe SMA 200):</b> <b>{kaufzone_von:.2f} € bis {kaufzone_bis:.2f} €</b> – "
+            f"solange die 200-Tage-Linie ({sma200:.2f} €) hält, ist hier ein gestaffelter Ersteinstieg möglich.<br>"
+            f"<b>2. Bestätigungs-Kaufsignal:</b> Erst wenn der Kurs die 50-Tage-Linie bei <b>{ausbruch_trigger:.2f} €</b> "
+            f"dynamisch zurückerobert, ist der Aufwärtstrend wieder aktiv."
+        )
+    else:
+        # Unter SMA 50 und SMA 200 (Abwärtstrend / Turnaround-Suche)
+        kaufzone_von = round(max(tief_52w * 0.99, aktuell - 1.3 * atr), 2)
+        kaufzone_bis = round(aktuell - 0.3 * atr, 2)
+        ausbruch_trigger = round(sma50 + 0.25 * atr, 2)
+        einstieg_kurz = f"Erst über {ausbruch_trigger:.2f} € (TFA: {kaufzone_von:.2f}–{kaufzone_bis:.2f} €)"
+        einstieg_strategie_text = (
+            f"<b>1. Konservativer Einstieg (Trendwende abwarten):</b> Erst bei Rückeroberung der 50-Tage-Linie über "
+            f"<b>{ausbruch_trigger:.2f} €</b> einsteigen, um nicht in ein fallendes Messer zu greifen.<br>"
+            f"<b>2. Antizyklische TFA-Abstauberzone:</b> Nur für mutige Turnaround-Anleger in kleinen Tranchen zwischen "
+            f"<b>{kaufzone_von:.2f} € und {kaufzone_bis:.2f} €</b> mit striktem Stop-Loss bei <b>{stop_loss_eur:.2f} €</b>."
+        )
+
+    risiko_eur = max(0.01, aktuell - stop_loss_eur)
+    bestes_ziel = max(kursziel_1_eur, kursziel_2_eur)
+    chance_eur = max(0.0, bestes_ziel - aktuell)
+    crv = round(chance_eur / risiko_eur, 2)
+
+    # Golden Cross, Trend-Follower & TFA Check
     golden_cross_neu = False
     if len(df) >= 8 and not df["SMA_200"].iloc[-8:].isna().any():
         golden_cross_neu = (df["SMA_50"].iloc[-8] <= df["SMA_200"].iloc[-8]) and (sma50 > sma200)
@@ -805,12 +1137,6 @@ def analysiere_aktie(ticker: str) -> dict | None:
     ist_tfa = (abstand_hoch_pct <= -35.0) and (
         (rsi < 38) or (rsi_vor5 < 35 and rsi > rsi_vor5) or (aktuell > sma50 and macd_hist > macd_hist_vortag)
     )
-
-    stop_loss_eur = max(0.01, aktuell - 2.0 * atr)
-    stop_puffer_pct = ((aktuell - stop_loss_eur) / aktuell) * 100
-    risiko_eur = max(0.01, aktuell - stop_loss_eur)
-    chance_eur = max(0.0, hoch_52w - aktuell)
-    crv = round(chance_eur / risiko_eur, 2)
 
     earnings_warnung = None
     if stamm["earnings_datum"]:
@@ -826,76 +1152,77 @@ def analysiere_aktie(ticker: str) -> dict | None:
     if golden_cross_neu:
         signal_text = "Starkes Kaufsignal (Frisches Golden Cross)"
         signal_farbe = "green"
-        kurz_begruendung = f"SMA 50 hat SMA 200 frisch nach oben gekreuzt; Kurs {abstand_sma50_pct:+.1f} % über SMA 50 (RSI {rsi:.0f})."
+        kurz_begruendung = f"Frisches Golden Cross; Kurs {abstand_sma50_pct:+.1f} % über SMA 50, Ziel {bestes_ziel:.2f} € ({max(potenzial_1_pct, potenzial_2_pct):+.1f} %)."
         gesamtfazit = (
             f"Bei {stamm['name']} hat die 50-Tage-Linie ({sma50:.2f} €) soeben die 200-Tage-Linie ({sma200:.2f} €) "
-            f"von unten nach oben durchbrochen – ein klassisches, langfristig bullisches Golden-Cross-Kaufsignal. "
-            f"Mit einem RSI von {rsi:.1f} hat die Aktie noch ausreichend Luft nach oben, ohne überhitzt zu sein. "
-            f"Ein Einstieg oder Teilkauf bietet sich an, abgesichert durch einen Stop-Loss bei {stop_loss_eur:.2f} € (-{stop_puffer_pct:.1f} %)."
+            f"von unten nach oben gekreuzt – ein starkes, langfristig bullisches Golden-Cross-Kaufsignal. "
+            f"Mit einem RSI von {rsi:.1f} hat die Aktie noch ausreichend Raum nach oben bis zum Kursziel von {bestes_ziel:.2f} € "
+            f"({max(potenzial_1_pct, potenzial_2_pct):+.1f} %). Einstiege in der Zone {einstieg_kurz} lassen sich bei {stop_loss_eur:.2f} € absichern."
         )
     elif ist_trend_follower and volumen_bestaetigt and macd_hist > 0:
         signal_text = "Starker Aufwärtstrend – Kaufen / Halten"
         signal_farbe = "green"
-        kurz_begruendung = f"Sauberer Aufwärtstrend ({abstand_sma50_pct:+.1f} % über SMA 50), hohes Volumen ({volumen_faktor:.1f}×) & steigender MACD."
+        kurz_begruendung = f"Intakter Aufwärtstrend ({abstand_sma50_pct:+.1f} % über SMA 50), hohes Volumen ({volumen_faktor:.1f}×) & Ziel {bestes_ziel:.2f} €."
         gesamtfazit = (
-            f"{stamm['name']} befindet sich in einem voll intakten Aufwärtstrend: Der Kurs notiert {abstand_sma50_pct:+.1f} % über der "
+            f"{stamm['name']} befindet sich in einem dynamischen Aufwärtstrend: Der Kurs liegt {abstand_sma50_pct:+.1f} % über der "
             f"50-Tage-Linie ({sma50:.2f} €) und {abstand_sma200_pct:+.1f} % über der 200-Tage-Linie ({sma200:.2f} €). "
-            f"Das überdurchschnittliche Handelsvolumen ({volumen_faktor:.1f}-facher Schnitt) und der positive MACD bestätigen den Kaufdruck. "
-            f"Bestehende Positionen laufen lassen; Neueinstiege lassen sich bei {stop_loss_eur:.2f} € absichern (CRV {crv:.1f} : 1)."
+            f"Überdurchschnittliches Volumen ({volumen_faktor:.1f}-facher Schnitt) und ein steigender MACD untermauern das "
+            f"Aufwärtspotenzial bis {bestes_ziel:.2f} € ({max(potenzial_1_pct, potenzial_2_pct):+.1f} %). Bestehende Stücke halten; "
+            f"Neukäufe bevorzugt bei leichten Rücksetzern um {kaufzone_von:.2f}–{kaufzone_bis:.2f} €."
         )
     elif ist_trend_follower:
-        signal_text = "Intakter Aufwärtstrend – Halten / Rücksetzer nutzen"
+        signal_text = "Intakter Aufwärtstrend – Rücksetzer nutzen"
         signal_farbe = "green"
-        kurz_begruendung = f"Über SMA 50 ({abstand_sma50_pct:+.1f} %) und SMA 200 ({abstand_sma200_pct:+.1f} %), RSI {rsi:.0f} im gesunden Bereich."
+        kurz_begruendung = f"Über SMA 50 ({abstand_sma50_pct:+.1f} %) & SMA 200 ({abstand_sma200_pct:+.1f} %), RSI {rsi:.0f}; Ziel {bestes_ziel:.2f} €."
         gesamtfazit = (
             f"Der übergeordnete Trend bei {stamm['name']} zeigt klar nach oben, da sowohl SMA 50 ({sma50:.2f} €) als auch "
-            f"SMA 200 ({sma200:.2f} €) unterhalb des aktuellen Kurses verlaufen. Der RSI liegt bei ausgeglichenen {rsi:.1f} Punkten. "
-            f"Da das Volumen zuletzt unauffällig war, sind kleine Rücksetzer in Richtung der 50-Tage-Linie ({sma50:.2f} €) "
-            f"besonders interessante Einstiegsgelegenheiten."
+            f"SMA 200 ({sma200:.2f} €) unterhalb des Kurses verlaufen. Der RSI liegt bei gesunden {rsi:.1f} Punkten. "
+            f"Rücksetzer in die Kaufzone {kaufzone_von:.2f}–{kaufzone_bis:.2f} € bieten ein attraktives Einstiegsfenster "
+            f"mit Kursziel {bestes_ziel:.2f} € ({max(potenzial_1_pct, potenzial_2_pct):+.1f} %)."
         )
     elif ist_tfa:
         signal_text = "Turnaround-Chance (TFA-Signal) – Antizyklisch beobachten"
         signal_farbe = "amber"
-        kurz_begruendung = f"{abs(abstand_hoch_pct):.0f} % unter 52W-Hoch; RSI ({rsi:.0f}) dreht aus überverkaufter Zone nach oben."
+        kurz_begruendung = f"{abs(abstand_hoch_pct):.0f} % unter 52W-Hoch; RSI ({rsi:.0f}) dreht nach oben; Erholungsziel {bestes_ziel:.2f} €."
         gesamtfazit = (
             f"{stamm['name']} notiert mit {abstand_hoch_pct:.1f} % deutlich unter seinem 52-Wochen-Hoch ({hoch_52w:.2f} €) "
-            f"und erfüllt damit das Hauptkriterium der Turnaround-Formel (TFA). Erste Stabilisierungszeichen sind sichtbar "
-            f"(RSI bei {rsi:.1f}, Trend vom 5-Tages-Tief drehend). Für risikobewusste Anleger bietet sich ein gestaffelter "
-            f"Einstieg mit engem Stop-Loss bei {stop_loss_eur:.2f} € an (CRV {crv:.1f} : 1 bis zum Jahreshoch)."
+            f"und erfüllt damit die Turnaround-Formel (TFA). Erste Stabilisierungstendenzen sind erkennbar "
+            f"(RSI {rsi:.1f}). Für risikobewusste Anleger bietet sich ein gestaffelter Aufbau mit engem Stop-Loss "
+            f"bei {stop_loss_eur:.2f} € an (Potenzial bis {bestes_ziel:.2f} €, CRV {crv:.1f} : 1)."
         )
     elif rsi > 74:
-        signal_text = "Stark überhitzt – Teilgewinne absichern"
+        signal_text = "Stark überhitzt – Rücksetzer abwarten"
         signal_farbe = "red"
-        kurz_begruendung = f"RSI bei {rsi:.0f} (überkauft) und bereits {abstand_sma50_pct:+.1f} % über SMA 50 – Rücksetzer-Gefahr."
+        kurz_begruendung = f"RSI bei {rsi:.0f} (überkauft), bereits {abstand_sma50_pct:+.1f} % über SMA 50 – erst bei {kaufzone_von:.2f}–{kaufzone_bis:.2f} € kaufen."
         gesamtfazit = (
             f"Nach einer steilen Rallye ist {stamm['name']} mit einem RSI von {rsi:.1f} technisch stark überkauft und hat sich "
-            f"bereits {abstand_sma50_pct:+.1f} % weit von seiner 50-Tage-Linie ({sma50:.2f} €) entfernt. Neue Käufe auf diesem "
-            f"Niveau haben ein erhöhtes Rückschlagrisiko. Wer investiert ist, sollte den Stop-Loss auf {stop_loss_eur:.2f} € "
-            f"nachziehen oder Teilgewinne mitnehmen."
+            f"{abstand_sma50_pct:+.1f} % weit von der 50-Tage-Linie ({sma50:.2f} €) entfernt. Jetzt nicht hinterherlaufen: "
+            f"Neueinstiege erst nach einer Abkühlung in die Zone {kaufzone_von:.2f}–{kaufzone_bis:.2f} € planen; "
+            f"bestehende Gewinne bei {stop_loss_eur:.2f} € absichern."
         )
     elif aktuell < sma50 and aktuell < sma200:
-        signal_text = "Abwärtstrend aktiv – Vorerst abwarten"
+        signal_text = "Abwärtstrend aktiv – Ausbruch über SMA 50 abwarten"
         signal_farbe = "red"
-        kurz_begruendung = f"Unter SMA 50 ({abstand_sma50_pct:.1f} %) und SMA 200 ({abstand_sma200_pct:.1f} %) – kein Boden bestätigt."
+        kurz_begruendung = f"Unter SMA 50 ({abstand_sma50_pct:.1f} %) & SMA 200 ({abstand_sma200_pct:.1f} %) – Einstieg erst über {ausbruch_trigger:.2f} €."
         gesamtfazit = (
-            f"{stamm['name']} befindet sich aktuell unter beiden wichtigen Trendlinien (SMA 50 bei {sma50:.2f} € und "
-            f"SMA 200 bei {sma200:.2f} €). Solange der Kurs die 50-Tage-Linie nicht zurückerobert und der MACD negativ bleibt, "
-            f"dominiert der Verkaufsdruck. Ein Einstieg drängt sich noch nicht auf – erst eine Bodenbildung über {sma50:.2f} € abwarten."
+            f"{stamm['name']} notiert aktuell unter beiden wichtigen Trendlinien (SMA 50 bei {sma50:.2f} € und "
+            f"SMA 200 bei {sma200:.2f} €). Solange der Kurs unter {sma50:.2f} € bleibt, dominiert der Abwärtsdruck. "
+            f"Vorerst abwarten und erst bei einer bestätigten Bodenbildung über {ausbruch_trigger:.2f} € einsteigen."
         )
     else:
         richtung_text = (
             "knapp unter der 50-Tage-Linie und testet diese als Widerstand"
             if aktuell < sma50
-            else "über der 50-Tage-Linie, kämpft aber noch mit der 200-Tage-Linie"
+            else "über der 50-Tage-Linie, arbeitet aber noch an der 200-Tage-Linie"
         )
         gc_zusatz = " Ein Golden Cross steht kurz bevor!" if golden_cross_nah else ""
         signal_text = "Neutral / Konsolidierung – Ausbruch abwarten"
         signal_farbe = "amber"
-        kurz_begruendung = f"Kurs {abstand_sma50_pct:+.1f} % zu SMA 50, {abstand_sma200_pct:+.1f} % zu SMA 200 (RSI {rsi:.0f}) – Seitwärtsphase."
+        kurz_begruendung = f"Seitwärtsphase (RSI {rsi:.0f}); Kaufzone {kaufzone_von:.2f}–{kaufzone_bis:.2f} € oder Ausbruch > {ausbruch_trigger:.2f} €."
         gesamtfazit = (
-            f"{stamm['name']} bewegt sich derzeit in einer Übergangs- bzw. Seitwärtsphase: Der Kurs liegt {richtung_text}.{gc_zusatz} "
-            f"Mit einem RSI von {rsi:.1f} liegt weder eine Übertreibung noch ein Panikverkauf vor. "
-            f"Ein neues Kaufsignal entsteht erst bei einem dynamischen Ausbruch über {max(sma50, sma200):.2f} € unter erhöhtem Volumen."
+            f"{stamm['name']} befindet sich in einer Konsolidierungsphase: Der Kurs liegt {richtung_text}.{gc_zusatz} "
+            f"Mit einem RSI von {rsi:.1f} ist die Aktie neutral bewertet. Ein klares Kaufsignal entsteht beim Ausbruch "
+            f"über {ausbruch_trigger:.2f} € mit Ziel {bestes_ziel:.2f} € ({max(potenzial_1_pct, potenzial_2_pct):+.1f} %)."
         )
 
     trend_detail = (
@@ -922,18 +1249,23 @@ def analysiere_aktie(ticker: str) -> dict | None:
         f"Das Handelsvolumen erreicht das <b>{volumen_faktor:.2f}-fache</b> des 20-Tage-Schnitts."
     )
 
-    if crv >= 2.0:
-        crv_text = "sehr attraktiv (mögliche Gewinnspanne bis zum Jahreshoch ist mindestens doppelt so groß wie das Stop-Loss-Risiko)"
-    elif crv >= 1.2:
-        crv_text = "solide / moderat (akzeptables Verhältnis, enge Absicherung sinnvoll)"
-    else:
-        crv_text = "gering (Kurs notiert bereits sehr nah am Jahreshoch oder die Tagesschwankung ist hoch)"
+    analysten_info_zeile = ""
+    if analysten_mean_eur:
+        spanne_txt = (
+            f" (Spanne: {analysten_low_eur:.2f} € bis {analysten_high_eur:.2f} €)"
+            if analysten_low_eur and analysten_high_eur
+            else ""
+        )
+        urteil_txt = f" • Konsens-Rating: <b>{stamm['analysten_urteil']}</b>" if stamm["analysten_urteil"] else ""
+        analysten_info_zeile = (
+            f"<br><b>Analysten-Schätzung ({stamm['analysten_anzahl']} Studien):</b> Ø Kursziel <b>{analysten_mean_eur:.2f} €</b>"
+            f"{spanne_txt}{urteil_txt}"
+        )
 
-    risiko_detail = (
-        f"Die 52-Wochen-Spanne reicht von <b>{tief_52w:.2f} €</b> (+{abstand_tief_pct:.1f} % vom Tief) bis "
-        f"<b>{hoch_52w:.2f} €</b> ({abstand_hoch_pct:.1f} % unter Hoch). Basierend auf der aktuellen Schwankungsbreite (ATR: {atr:.2f} €) "
-        f"ergibt sich ein sinnvoller Stop-Loss bei <b>{stop_loss_eur:.2f} €</b> (-{stop_puffer_pct:.1f} % Puffer) "
-        f"und ein Chance-Risiko-Verhältnis von <b>{crv:.1f} : 1</b> – das ist <b>{crv_text}</b>."
+    kursziele_detail = (
+        f"<b>Kursziel 1 ({kursziel_1_label}):</b> <b>{kursziel_1_eur:.2f} €</b> ({potenzial_1_pct:+.1f} % Potenzial)<br>"
+        f"<b>Kursziel 2 ({kursziel_2_label}):</b> <b>{kursziel_2_eur:.2f} €</b> ({potenzial_2_pct:+.1f} % Potenzial)"
+        f"{analysten_info_zeile}"
     )
 
     return {
@@ -955,6 +1287,18 @@ def analysiere_aktie(ticker: str) -> dict | None:
         "abstand_hoch_pct": abstand_hoch_pct,
         "stop_loss_eur": stop_loss_eur,
         "stop_puffer_pct": stop_puffer_pct,
+        "kursziel_1_eur": kursziel_1_eur,
+        "potenzial_1_pct": potenzial_1_pct,
+        "kursziel_2_eur": kursziel_2_eur,
+        "potenzial_2_pct": potenzial_2_pct,
+        "bestes_ziel_eur": bestes_ziel,
+        "bestes_potenzial_pct": round(((bestes_ziel - aktuell) / aktuell) * 100, 1),
+        "kaufzone_von": kaufzone_von,
+        "kaufzone_bis": kaufzone_bis,
+        "ausbruch_trigger": ausbruch_trigger,
+        "einstieg_kurz": einstieg_kurz,
+        "einstieg_strategie_text": einstieg_strategie_text,
+        "kursziele_detail": kursziele_detail,
         "crv": crv,
         "golden_cross": golden_cross_neu,
         "ist_trend_follower": ist_trend_follower,
@@ -965,7 +1309,6 @@ def analysiere_aktie(ticker: str) -> dict | None:
         "gesamtfazit": gesamtfazit,
         "trend_detail": trend_detail,
         "momentum_detail": momentum_detail,
-        "risiko_detail": risiko_detail,
         "earnings_datum": stamm["earnings_datum"],
         "earnings_warnung": earnings_warnung,
         "df": df,
@@ -1220,14 +1563,15 @@ def lade_sektor_heatmap() -> pd.DataFrame:
 # SESSION STATE & NAVIGATION-CALLBACKS
 # ==============================================================================
 BEREICHE = [
-    "1. Markt-Überblick & Rezessions-Barometer",
-    "2. Trend- & Turnaround-Scanner",
-    "3. Einzelaktien-Analyse (€)",
-    "4. Strategie-Backtesting & Signal-Chart",
-    "5. Saisonalitäts-Analyse (€)",
-    "6. Sektor-Heatmap & Rotation",
-    "7. Dividenden-Kalender (€)",
-    "8. Krypto-ETFs & Kapitalflüsse",
+    "1. Markt-Überblick & Leitindizes",
+    "2. Rezessions-Barometer (FRED Detail)",
+    "3. Trend- & Turnaround-Scanner",
+    "4. Einzelaktien-Analyse (€)",
+    "5. Strategie-Backtesting & Signal-Chart",
+    "6. Saisonalitäts-Analyse (€)",
+    "7. Sektor-Heatmap & Rotation",
+    "8. Dividenden-Kalender (€)",
+    "9. Krypto-ETFs & Kapitalflüsse",
 ]
 
 if "ausgewaehlter_ticker" not in st.session_state:
@@ -1243,12 +1587,12 @@ if "nav_bereich" not in st.session_state:
 def wechsele_zu_einzelanalyse(ticker: str, anzeige_name: str):
     st.session_state["ausgewaehlter_ticker"] = ticker
     st.session_state["einzel_suchfeld"] = anzeige_name
-    st.session_state["nav_bereich"] = "3. Einzelaktien-Analyse (€)"
+    st.session_state["nav_bereich"] = "4. Einzelaktien-Analyse (€)"
 
 
 def wechsele_zu_backtesting(ticker: str):
     st.session_state["ausgewaehlter_ticker"] = ticker
-    st.session_state["nav_bereich"] = "4. Strategie-Backtesting & Signal-Chart"
+    st.session_state["nav_bereich"] = "5. Strategie-Backtesting & Signal-Chart"
 
 
 # ==============================================================================
@@ -1276,23 +1620,22 @@ with st.sidebar:
         )
 
 # ==============================================================================
-# BEREICH 1: MARKT-ÜBERBLICK, STIMMUNG & REZESSIONS-BAROMETER (FRED)
+# BEREICH 1: MARKT-ÜBERBLICK, STIMMUNG & LEITINDIZES (INKL. NASDAQ)
 # ==============================================================================
-if bereich == "1. Markt-Überblick & Rezessions-Barometer":
-    st.header("🧭 Markt-Überblick & FRED Rezessions-Barometer")
-    st.write("Kombination aus kurzfristiger Börsenstimmung (VIX) und 6 Echtzeit-Wirtschaftsindikatoren der US-Notenbank (FRED).")
+if bereich == "1. Markt-Überblick & Leitindizes":
+    st.header("🧭 Markt-Überblick & Börsenstimmung")
+    st.write("Aktuelle Großwetterlage an den Weltbörsen – inklusive Angst-Barometer (VIX) und aller 5 wichtigen Leitindizes.")
 
     sentiment = berechne_markt_sentiment()
-    rezession = berechne_rezessions_barometer()
 
-    col_g1, col_g2 = st.columns(2)
-    with col_g1:
+    col_gauge, col_info = st.columns([1.15, 1.05])
+    with col_gauge:
         fig_gauge = go.Figure(
             go.Indicator(
                 mode="gauge+number",
                 value=sentiment["punkte"],
-                title={"text": "Börsen-Stimmung (0 = Angst, 100 = Gier)", "font": {"size": 17, "color": "#E6EDF3"}},
-                number={"font": {"size": 42, "color": "#E6EDF3"}},
+                title={"text": "Markt-Stimmung (0 = Angst, 100 = Gier)", "font": {"size": 18, "color": "#E6EDF3"}},
+                number={"font": {"size": 44, "color": "#E6EDF3"}},
                 gauge={
                     "axis": {"range": [0, 100], "tickcolor": "#E6EDF3"},
                     "bar": {"color": "#58A6FF"},
@@ -1307,21 +1650,68 @@ if bereich == "1. Markt-Überblick & Rezessions-Barometer":
                 },
             )
         )
-        fig_gauge.update_layout(paper_bgcolor="#0E1117", font={"color": "#E6EDF3"}, height=290, margin=dict(l=20, r=20, t=50, b=10))
+        fig_gauge.update_layout(paper_bgcolor="#0E1117", font={"color": "#E6EDF3"}, height=300, margin=dict(l=20, r=20, t=50, b=15))
         st.plotly_chart(fig_gauge, use_container_width=True)
+
+    with col_info:
+        st.subheader("Aktuelle Stimmungslage")
         st.markdown(
-            f"<div class='metric-card'><b>Aktuelle Stimmung:</b> {sentiment['label']}<br>"
-            f"Angst-Barometer (VIX): <b>{sentiment['vix']}</b></div>",
+            f"<div class='metric-card'><h4>{sentiment['label']}</h4>"
+            f"<p>Angst-Barometer (VIX): <b>{sentiment['vix']}</b> (Unter 20 bedeutet ruhiges Fahrwasser)</p></div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            """
+            <div class='info-box'>
+            <b>Was bedeutet das für deine Einstiege?</b><br>
+            • Bei <b>Angst (unter 40)</b> lohnen sich antizyklische Turnaround-Kandidaten (TFA-Scanner).<br>
+            • Bei <b>Optimismus (55–75)</b> laufen Trend-Follower & Golden-Cross-Signale am zuverlässigsten.<br>
+            • Den langfristigen Konjunktur-Check findest du im separaten Menüpunkt <b>„2. Rezessions-Barometer (FRED Detail)“</b>.
+            </div>
+            """,
             unsafe_allow_html=True,
         )
 
-    with col_g2:
+    st.subheader("🌍 Welt-Leitindizes im Schnell-Check (inkl. NASDAQ)")
+    indizes = [
+        ("DAX 🇩🇪", "^GDAXI"),
+        ("S&P 500 🇺🇸", "^GSPC"),
+        ("NASDAQ 100 🇺🇸", "^NDX"),
+        ("Hang Seng (HK/CN) 🇨🇳", "^HSI"),
+        ("Nikkei 225 (Japan) 🇯🇵", "^N225"),
+    ]
+    idx_cols = st.columns(5)
+    for col, (iname, iticker) in zip(idx_cols, indizes):
+        with col:
+            idf = bereinige_dataframe(yf.download(iticker, period="5d", interval="1d", progress=False))
+            if not idf.empty and len(idf) >= 2:
+                wert = float(idf["Close"].iloc[-1])
+                diff = ((wert - float(idf["Close"].iloc[-2])) / float(idf["Close"].iloc[-2])) * 100
+                st.metric(iname, f"{wert:,.0f} Pkt.", f"{diff:+.2f} %")
+            else:
+                st.metric(iname, "Lädt...", "0.00 %")
+
+# ==============================================================================
+# BEREICH 2: REZESSIONS-BAROMETER (EIGENE SEITE MIT ALLEN 6 FRED-INDIKATOREN IM DETAIL)
+# ==============================================================================
+elif bereich == "2. Rezessions-Barometer (FRED Detail)":
+    st.header("🚦 US-Notenbank (FRED) Rezessions-Barometer")
+    st.write(
+        "Echtzeit-Konjunkturanalyse auf Basis der 6 wichtigsten Frühindikatoren der Federal Reserve (FRED) – "
+        "ohne API-Key, mit Ampelsystem, Detail-Beschreibungen und konkreter Portfolio-Steuerung."
+    )
+
+    with st.spinner("Lade Echtzeit-Wirtschaftsdaten der US-Notenbank (FRED)..."):
+        rezession = berechne_rezessions_barometer()
+
+    col_rez1, col_rez2 = st.columns([1.15, 1.05])
+    with col_rez1:
         fig_rez = go.Figure(
             go.Indicator(
                 mode="gauge+number",
                 value=rezession["score"],
-                title={"text": "FRED Rezessions-Barometer (0 = Sicher, 100 = Rezession)", "font": {"size": 17, "color": "#E6EDF3"}},
-                number={"font": {"size": 42, "color": "#E6EDF3"}},
+                title={"text": "Rezessions-Risiko-Score (0 = Sicher, 100 = Rezession)", "font": {"size": 17, "color": "#E6EDF3"}},
+                number={"font": {"size": 46, "color": "#E6EDF3"}},
                 gauge={
                     "axis": {"range": [0, 100], "tickcolor": "#E6EDF3"},
                     "bar": {"color": "#FFD54F"},
@@ -1334,92 +1724,87 @@ if bereich == "1. Markt-Überblick & Rezessions-Barometer":
                 },
             )
         )
-        fig_rez.update_layout(paper_bgcolor="#0E1117", font={"color": "#E6EDF3"}, height=290, margin=dict(l=20, r=20, t=50, b=10))
+        fig_rez.update_layout(paper_bgcolor="#0E1117", font={"color": "#E6EDF3"}, height=310, margin=dict(l=20, r=20, t=55, b=15))
         st.plotly_chart(fig_rez, use_container_width=True)
+
+    with col_rez2:
+        st.subheader("Gesamt-Ampel & Konjunktur-Fazit")
         st.markdown(
-            f"<div class='metric-card'><b>Makro-Ampel:</b> {rezession['ampel_gesamt']}<br>"
-            f"Basis: 6 Live-Zeitreihen der Federal Reserve (FRED)</div>",
+            f"<div class='metric-card'><h4>{rezession['ampel_gesamt']}</h4>"
+            f"<p>Risiko-Score: <b>{rezession['score']} von 100 Punkten</b> (gewichtet über alle 6 FRED-Frühindikatoren)</p></div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<div class='info-box'><b>📋 Konkrete Portfolio-Strategie-Empfehlung:</b><br>{rezession['strategie']}</div>",
             unsafe_allow_html=True,
         )
 
-    st.markdown(
-        f"<div class='info-box'><b>📋 Portfolio-Strategie-Empfehlung laut Rezessions-Barometer:</b><br>{rezession['strategie']}</div>",
-        unsafe_allow_html=True,
-    )
-
+    st.divider()
     st.subheader("🚦 Die 6 FRED Rezessions-Indikatoren im Detail")
-    if not rezession["tabelle"].empty:
-        st.dataframe(rezession["tabelle"], use_container_width=True, hide_index=True)
+    st.caption("Jeder Indikator wird einzeln mit seinem aktuellen Wert, der kritischen Warnschwelle und seiner wirtschaftlichen Bedeutung erklärt.")
 
-    c_fred1, c_fred2 = st.columns(2)
-    with c_fred1:
+    karten = rezession["detail_karten"]
+    for reihe_start in range(0, len(karten), 2):
+        c_left, c_right = st.columns(2)
+        for col_widget, idx in zip([c_left, c_right], [reihe_start, reihe_start + 1]):
+            if idx < len(karten):
+                k = karten[idx]
+                with col_widget:
+                    st.markdown(
+                        f"""
+                        <div class='fred-card'>
+                            <div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;'>
+                                <b style='font-size:1.05rem;'>{k['titel']}</b>
+                                <span class='badge-{k['ampel_farbe']}'>{k['ampel_text']}</span>
+                            </div>
+                            <div style='font-size:0.9rem; color:#8B949E; margin-bottom:10px;'>
+                                <b>Aktuell:</b> <span style='color:#E6EDF3; font-size:1.02rem;'>{k['wert']}</span> &nbsp;|&nbsp;
+                                <b>Schwelle:</b> {k['schwelle']} &nbsp;|&nbsp; <b>Stand:</b> {k['stand']}
+                            </div>
+                            <p style='font-size:0.9rem; color:#C9D1D9; margin-bottom:8px;'>
+                                <b>Was wird gemessen?</b> {k['was_ist_das']}
+                            </p>
+                            <p style='font-size:0.92rem; color:#E6EDF3; margin-bottom:0;'>
+                                <b>Einordnung:</b> {k['bewertung']}
+                            </p>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+    st.subheader("📊 Kompakte Übersichtstabelle der 6 Makro-Indikatoren")
+    st.dataframe(rezession["tabelle"], use_container_width=True, hide_index=True)
+
+    st.subheader("📈 Historische Verläufe der wichtigsten Frühwarnsysteme")
+    c_f1, c_f2, c_f3 = st.columns(3)
+    with c_f1:
         if not rezession["sahm_serie"].empty:
             fig_sahm = go.Figure()
-            fig_sahm.add_trace(
-                go.Scatter(
-                    x=rezession["sahm_serie"].index,
-                    y=rezession["sahm_serie"].values,
-                    name="Sahm-Regel (%-Pkt.)",
-                    line=dict(color="#58A6FF", width=2.2),
-                )
-            )
-            fig_sahm.add_hline(y=0.50, line_dash="dash", line_color="#FF5252", annotation_text="Rezessions-Schwelle (0,50)")
-            fig_sahm.update_layout(
-                title="Sahm-Regel Verlauf (letzte 5 Jahre)",
-                paper_bgcolor="#0E1117",
-                plot_bgcolor="#161B22",
-                font=dict(color="#E6EDF3"),
-                height=300,
-                margin=dict(l=15, r=15, t=45, b=15),
-            )
+            fig_sahm.add_trace(go.Scatter(x=rezession["sahm_serie"].index, y=rezession["sahm_serie"].values, name="Sahm-Regel", line=dict(color="#58A6FF", width=2.2)))
+            fig_sahm.add_hline(y=0.50, line_dash="dash", line_color="#FF5252", annotation_text="Schwelle 0,50")
+            fig_sahm.update_layout(title="Sahm-Regel (5 Jahre)", paper_bgcolor="#0E1117", plot_bgcolor="#161B22", font=dict(color="#E6EDF3"), height=290, margin=dict(l=15, r=15, t=45, b=15))
             st.plotly_chart(fig_sahm, use_container_width=True)
-
-    with c_fred2:
+    with c_f2:
         if not rezession["zinskurve_serie"].empty:
             fig_zk = go.Figure()
-            fig_zk.add_trace(
-                go.Scatter(
-                    x=rezession["zinskurve_serie"].index,
-                    y=rezession["zinskurve_serie"].values,
-                    name="10J–2J Spread (%)",
-                    line=dict(color="#00E676", width=2.2),
-                )
-            )
-            fig_zk.add_hline(y=0.0, line_dash="dash", line_color="#FFB300", annotation_text="Nulllinie (Inversion < 0 %)")
-            fig_zk.update_layout(
-                title="US-Zinskurve 10J minus 2J (letzte 3 Jahre)",
-                paper_bgcolor="#0E1117",
-                plot_bgcolor="#161B22",
-                font=dict(color="#E6EDF3"),
-                height=300,
-                margin=dict(l=15, r=15, t=45, b=15),
-            )
+            fig_zk.add_trace(go.Scatter(x=rezession["zinskurve_serie"].index, y=rezession["zinskurve_serie"].values, name="10J–2J", line=dict(color="#00E676", width=2.2)))
+            fig_zk.add_hline(y=0.0, line_dash="dash", line_color="#FFB300", annotation_text="0,00 %")
+            fig_zk.update_layout(title="Zinskurve 10J–2J (3 Jahre)", paper_bgcolor="#0E1117", plot_bgcolor="#161B22", font=dict(color="#E6EDF3"), height=290, margin=dict(l=15, r=15, t=45, b=15))
             st.plotly_chart(fig_zk, use_container_width=True)
-
-    st.subheader("🌍 Welt-Leitindizes im Schnell-Check")
-    indizes = [
-        ("DAX 🇩🇪", "^GDAXI"),
-        ("S&P 500 🇺🇸", "^GSPC"),
-        ("Hang Seng (HK/CN) 🇨🇳", "^HSI"),
-        ("Nikkei 225 (Japan) 🇯🇵", "^N225"),
-    ]
-    idx_cols = st.columns(4)
-    for col, (iname, iticker) in zip(idx_cols, indizes):
-        with col:
-            idf = bereinige_dataframe(yf.download(iticker, period="5d", interval="1d", progress=False))
-            if not idf.empty and len(idf) >= 2:
-                wert = float(idf["Close"].iloc[-1])
-                diff = ((wert - float(idf["Close"].iloc[-2])) / float(idf["Close"].iloc[-2])) * 100
-                st.metric(iname, f"{wert:,.0f} Pkt.", f"{diff:+.2f} %")
-            else:
-                st.metric(iname, "Lädt...", "0.00 %")
+    with c_f3:
+        if not rezession["hy_serie"].empty:
+            fig_hy = go.Figure()
+            fig_hy.add_trace(go.Scatter(x=rezession["hy_serie"].index, y=rezession["hy_serie"].values, name="HY Spread", line=dict(color="#CE93D8", width=2.2)))
+            fig_hy.add_hline(y=5.0, line_dash="dash", line_color="#FF5252", annotation_text="Stress 5,0 %")
+            fig_hy.update_layout(title="High-Yield Credit Spread (3 Jahre)", paper_bgcolor="#0E1117", plot_bgcolor="#161B22", font=dict(color="#E6EDF3"), height=290, margin=dict(l=15, r=15, t=45, b=15))
+            st.plotly_chart(fig_hy, use_container_width=True)
 
 # ==============================================================================
-# BEREICH 2: TREND-FOLLOWER & TFA-SCANNER (INKL. CHINA & JAPAN IN €)
+# BEREICH 3: TREND-FOLLOWER & TFA-SCANNER (INKL. CHINA, JAPAN, KURSIZIELE & EINSTIEGE)
 # ==============================================================================
-elif bereich == "2. Trend- & Turnaround-Scanner":
+elif bereich == "3. Trend- & Turnaround-Scanner":
     st.header("🔍 Aktien-Scanner: Trend-Follower & Turnaround-Formel (TFA)")
-    st.caption("Alle Kurse aus Hongkong (HKD), Japan (JPY), USA (USD) und Europa werden live in Euro (€) umgerechnet.")
+    st.caption("Alle Kurse, Kursziele und Einstiegszonen aus Hongkong (HKD), Japan (JPY), USA (USD) und Europa werden live in Euro (€) umgerechnet.")
 
     col_u, col_m = st.columns([1.4, 1.6])
     with col_u:
@@ -1449,7 +1834,7 @@ elif bereich == "2. Trend- & Turnaround-Scanner":
                     ticker_liste.append(gef_tkr)
 
     ergebnisse = []
-    with st.spinner("Lade Kurse, rechne HKD / JPY / USD in Euro (€) um und berechne Signale..."):
+    with st.spinner("Lade Kurse, berechne Euro-Kursziele, Einstiegszonen & Signale..."):
         for t in ticker_liste:
             res = analysiere_aktie(t)
             if res:
@@ -1472,19 +1857,20 @@ elif bereich == "2. Trend- & Turnaround-Scanner":
                 "Markt": r["region"],
                 "Kurs (€)": round(r["kurs_eur"], 2),
                 "Heute (%)": round(r["tages_diff_pct"], 2),
-                "RSI (14)": round(r["rsi"], 1),
-                "Abstand 52W-Hoch": f"{r['abstand_hoch_pct']:.1f} %",
+                "Einstiegschance (€)": r["einstieg_kurz"],
+                "Kursziel (€)": round(r["bestes_ziel_eur"], 2),
+                "Potenzial (%)": f"{r['bestes_potenzial_pct']:+.1f} %",
                 "Stop-Loss (€)": round(r["stop_loss_eur"], 2),
                 "CRV": f"{r['crv']:.1f} : 1",
                 "Gesamturteil": r["signal_text"],
-                "Begründung im Detail": r["kurz_begruendung"],
+                "Begründung": r["kurz_begruendung"],
             })
 
         df_anzeige = pd.DataFrame(tabellen_daten)
         st.dataframe(df_anzeige, use_container_width=True, hide_index=True)
 
         st.divider()
-        st.subheader("🔎 Treffer im Detail prüfen & direkt öffnen")
+        st.subheader("🔎 Treffer im Detail prüfen (Kursziele, Einstiegschancen & Begründung)")
         auswahl_map = {f"{r['name']} ({r['ticker']}) – {r['kurs_eur']:.2f} €": r for r in gefiltert}
         gewaehltes_label = st.selectbox("Aktie auswählen:", list(auswahl_map.keys()))
         sel = auswahl_map[gewaehltes_label]
@@ -1494,7 +1880,9 @@ elif bereich == "2. Trend- & Turnaround-Scanner":
             <div class='verdict-box'>
                 <b>{sel['name']} ({sel['ticker']}) • {sel['region']}</b> —
                 <span class='badge-{sel['signal_farbe']}'>{sel['signal_text']}</span><br><br>
-                {sel['gesamtfazit']}
+                <b>Gesamteinschätzung:</b> {sel['gesamtfazit']}<br><br>
+                <b>🎯 Kursziele:</b> {sel['kursziele_detail']}<br><br>
+                <b>🛒 Konkrete Einstiegschancen:</b><br>{sel['einstieg_strategie_text']}
             </div>
             """,
             unsafe_allow_html=True,
@@ -1503,24 +1891,24 @@ elif bereich == "2. Trend- & Turnaround-Scanner":
         btn_c1, btn_c2, _ = st.columns([1.3, 1.3, 2])
         with btn_c1:
             st.button(
-                "➡️ Zur Einzelaktien-Analyse wechseln",
+                "➡️ Zur vollständigen Einzelaktien-Analyse",
                 on_click=wechsele_zu_einzelanalyse,
                 args=(sel["ticker"], sel["name"]),
                 use_container_width=True,
             )
         with btn_c2:
             st.button(
-                "📊 Im Backtesting-Chart öffnen",
+                "📊 Im Backtesting-Signal-Chart öffnen",
                 on_click=wechsele_zu_backtesting,
                 args=(sel["ticker"],),
                 use_container_width=True,
             )
 
 # ==============================================================================
-# BEREICH 3: EINZELAKTIEN-ANALYSE (NAMENSSUCHE + AUSFÜHRLICHE EINSCHÄTZUNG IN €)
+# BEREICH 4: EINZELAKTIEN-ANALYSE (NAMENSSUCHE + KURSIZIELE + EINSTIEGSCHANCEN)
 # ==============================================================================
-elif bereich == "3. Einzelaktien-Analyse (€)":
-    st.header("🔬 Einzelaktien-Analyse (Alle Kurse in €)")
+elif bereich == "4. Einzelaktien-Analyse (€)":
+    st.header("🔬 Einzelaktien-Analyse (Kurse, Kursziele & Einstiegschancen in €)")
 
     col_in, col_quick, col_btn = st.columns([1.8, 1.5, 0.9])
     with col_in:
@@ -1569,6 +1957,7 @@ elif bereich == "3. Einzelaktien-Analyse (€)":
         elif daten["earnings_datum"]:
             st.caption(f"📅 Nächster Quartalszahlen-Termin: {daten['earnings_datum']}")
 
+        # Reihe 1: Aktueller Kurs, RSI, Stop-Loss, CRV, 52W-Hoch
         k1, k2, k3, k4, k5 = st.columns(5)
         k1.metric("Aktueller Kurs", f"{daten['kurs_eur']:.2f} €", f"{daten['tages_diff_pct']:+.2f} %")
         k2.metric(
@@ -1580,24 +1969,56 @@ elif bereich == "3. Einzelaktien-Analyse (€)":
         k4.metric("Chance-Risiko (CRV)", f"{daten['crv']:.1f} : 1", "Attraktiv ≥ 2,0" if daten["crv"] >= 2.0 else "Moderat / Eng")
         k5.metric("52-Wochen-Hoch", f"{daten['hoch_52w_eur']:.2f} €", f"{daten['abstand_hoch_pct']:.1f} %")
 
+        # Reihe 2: Kursziele & Einstiegschancen auf einen Blick
+        z1, z2, z3, z4 = st.columns(4)
+        z1.metric("🎯 Kursziel 1 (Technik)", f"{daten['kursziel_1_eur']:.2f} €", f"{daten['potenzial_1_pct']:+.1f} %")
+        z2.metric("🎯 Kursziel 2 (Konsens/Ziel)", f"{daten['kursziel_2_eur']:.2f} €", f"{daten['potenzial_2_pct']:+.1f} %")
+        z3.metric("🛒 Pullback-Kaufzone", f"{daten['kaufzone_von']:.2f} – {daten['kaufzone_bis']:.2f} €", "Idealer Rücksetzer")
+        z4.metric("🚀 Ausbruchs-Marke", f"> {daten['ausbruch_trigger']:.2f} €", "Prozyklischer Trigger")
+
+        # Ausführliches Gesamturteil & Begründung
         st.markdown(
             f"""
             <div class='metric-card'>
                 <h4>Gesamturteil: <span class='badge-{daten["signal_farbe"]}'>{daten["signal_text"]}</span></h4>
                 <p style='font-size: 1.0rem; line-height: 1.6; margin-top: 10px;'>
-                    <b>Ausführliche Einschätzung & Handlungsempfehlung:</b><br>
+                    <b>Ausführliche Gesamteinschätzung:</b><br>
                     {daten['gesamtfazit']}
                 </p>
                 <hr style='border-color: #30363D; margin: 14px 0;'>
                 <ul style='line-height: 1.65;'>
-                    <li><b>1. Trend- & Linien-Check (SMA 50 / SMA 200):</b> {daten['trend_detail']}</li>
-                    <li><b>2. Schwung, RSI & Volumen:</b> {daten['momentum_detail']}</li>
-                    <li><b>3. 52-Wochen-Spanne & Risiko-Steuerung:</b> {daten['risiko_detail']}</li>
+                    <li><b>Trend- & Linien-Check (SMA 50 / SMA 200):</b> {daten['trend_detail']}</li>
+                    <li><b>Schwung, RSI & Volumen:</b> {daten['momentum_detail']}</li>
                 </ul>
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+        # Zwei separate Boxen: Konkrete Einstiegschancen & Kursziele
+        c_plan1, c_plan2 = st.columns(2)
+        with c_plan1:
+            st.markdown(
+                f"""
+                <div class='entry-box'>
+                    <h4 style='margin-top:0; color:#00E676;'>🛒 Konkrete Einstiegschancen & Kaufzonen</h4>
+                    {daten['einstieg_strategie_text']}<br><br>
+                    <b>Absicherung (Stop-Loss):</b> <b>{daten['stop_loss_eur']:.2f} €</b> (-{daten['stop_puffer_pct']:.1f} % unter aktuellem Kurs, berechnet über 2× ATR).
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        with c_plan2:
+            st.markdown(
+                f"""
+                <div class='target-box'>
+                    <h4 style='margin-top:0; color:#FFD54F;'>🎯 Kursziele & Gewinnpotenzial</h4>
+                    {daten['kursziele_detail']}<br><br>
+                    <b>Chance-Risiko-Verhältnis (CRV):</b> <b>{daten['crv']:.1f} : 1</b> bezogen auf das Hauptziel von <b>{daten['bestes_ziel_eur']:.2f} €</b>.
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
         st.button(
             "📊 Kauf- & Verkaufssignale für diese Aktie im Backtesting-Chart ansehen",
@@ -1605,6 +2026,7 @@ elif bereich == "3. Einzelaktien-Analyse (€)":
             args=(daten["ticker"],),
         )
 
+        # Kurschart in Euro mit Kursziel, Kaufzone, SMA 50, SMA 200 & Stop-Loss
         df_plot = daten["df"].tail(200)
         fig = make_subplots(
             rows=2,
@@ -1613,7 +2035,7 @@ elif bereich == "3. Einzelaktien-Analyse (€)":
             vertical_spacing=0.08,
             row_heights=[0.72, 0.28],
             subplot_titles=(
-                f"{daten['name']} – Kursverlauf in Euro (€) mit 50- & 200-Tage-Linie",
+                f"{daten['name']} – Kursverlauf, Kursziel, Kaufzone & Stop-Loss in Euro (€)",
                 "RSI (14) – Überkauft (> 70) / Überverkauft (< 30)",
             ),
         )
@@ -1630,6 +2052,24 @@ elif bereich == "3. Einzelaktien-Analyse (€)":
         )
         fig.add_trace(
             go.Scatter(x=df_plot.index, y=df_plot["SMA_200"], name="SMA 200 (€)", line=dict(color="#CE93D8", width=1.8)),
+            row=1,
+            col=1,
+        )
+        fig.add_hline(
+            y=daten["bestes_ziel_eur"],
+            line_dash="dash",
+            line_color="#00E676",
+            annotation_text=f"Kursziel: {daten['bestes_ziel_eur']:.2f} €",
+            row=1,
+            col=1,
+        )
+        fig.add_hrect(
+            y0=daten["kaufzone_von"],
+            y1=daten["kaufzone_bis"],
+            fillcolor="rgba(88, 166, 255, 0.14)",
+            line_width=0,
+            annotation_text="Kaufzone",
+            annotation_position="bottom left",
             row=1,
             col=1,
         )
@@ -1654,7 +2094,7 @@ elif bereich == "3. Einzelaktien-Analyse (€)":
             paper_bgcolor="#0E1117",
             plot_bgcolor="#161B22",
             font=dict(color="#E6EDF3"),
-            height=600,
+            height=620,
             hovermode="x unified",
             margin=dict(l=20, r=20, t=55, b=20),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
@@ -1664,9 +2104,9 @@ elif bereich == "3. Einzelaktien-Analyse (€)":
         st.plotly_chart(fig, use_container_width=True)
 
 # ==============================================================================
-# BEREICH 4: BACKTESTING & SIGNAL-CHART (OHNE KAPITALENTWICKLUNG, MIT GOLDEN CROSS)
+# BEREICH 5: BACKTESTING & SIGNAL-CHART (OHNE KAPITALENTWICKLUNG, MIT GOLDEN CROSS)
 # ==============================================================================
-elif bereich == "4. Strategie-Backtesting & Signal-Chart":
+elif bereich == "5. Strategie-Backtesting & Signal-Chart":
     st.header("📊 Signal-Backtesting: Kauf-, Verkaufs- & Golden-Cross-Signale")
     st.write("Übersichtliche Darstellung aller historischen Einstiegs-, Ausstiegs- und Golden-Cross-Punkte direkt im Euro-Chart.")
 
@@ -1882,9 +2322,9 @@ elif bereich == "4. Strategie-Backtesting & Signal-Chart":
             st.dataframe(df_ereignisse.iloc[::-1], use_container_width=True, hide_index=True)
 
 # ==============================================================================
-# BEREICH 5: SAISONALITÄTS-ANALYSE (€)
+# BEREICH 6: SAISONALITÄTS-ANALYSE (€)
 # ==============================================================================
-elif bereich == "5. Saisonalitäts-Analyse (€)":
+elif bereich == "6. Saisonalitäts-Analyse (€)":
     st.header("📅 Saisonalitäts-Analyse: Beste & schwächste Börsenmonate")
     st.write("Analysiert, in welchen Kalendermonaten eine Aktie historisch am stärksten steigt und wie hoch die Trefferquote ist.")
 
@@ -1952,9 +2392,9 @@ elif bereich == "5. Saisonalitäts-Analyse (€)":
         st.dataframe(df_monate[["Monat", "Ø Rendite (%)", "Trefferquote (%)", "Anzahl Jahre"]], use_container_width=True, hide_index=True)
 
 # ==============================================================================
-# BEREICH 6: SEKTOR-HEATMAP & BRANCHEN-ROTATION
+# BEREICH 7: SEKTOR-HEATMAP & BRANCHEN-ROTATION
 # ==============================================================================
-elif bereich == "6. Sektor-Heatmap & Rotation":
+elif bereich == "7. Sektor-Heatmap & Rotation":
     st.header("🗺️ Sektor-Heatmap & Branchen-Rotation (€)")
     st.write("Zeigt auf einen Blick, in welche Wirtschaftssektoren aktuell Kapital fließt und welche Branchen zurückbleiben.")
 
@@ -1991,9 +2431,9 @@ elif bereich == "6. Sektor-Heatmap & Rotation":
         st.dataframe(df_sektor_sort, use_container_width=True, hide_index=True)
 
 # ==============================================================================
-# BEREICH 7: DIVIDENDEN-KALENDER & AUSSCHÜTTUNGS-CHECK (€)
+# BEREICH 8: DIVIDENDEN-KALENDER & AUSSCHÜTTUNGS-CHECK (€)
 # ==============================================================================
-elif bereich == "7. Dividenden-Kalender (€)":
+elif bereich == "8. Dividenden-Kalender (€)":
     st.header("💰 Dividenden-Kalender & Ausschüttungs-Check (€)")
     st.write("Übersicht über Dividendenrenditen, jährliche Ausschüttung in Euro (€), Ex-Dividenden-Tage und Ausschüttungsquoten.")
 
@@ -2041,9 +2481,9 @@ elif bereich == "7. Dividenden-Kalender (€)":
     st.dataframe(df_div, use_container_width=True, hide_index=True)
 
 # ==============================================================================
-# BEREICH 8: KRYPTO-ETFs & KAPITALFLÜSSE (7-TAGE & 30-TAGE SUMMEN)
+# BEREICH 9: KRYPTO-ETFs & KAPITALFLÜSSE (7-TAGE & 30-TAGE SUMMEN)
 # ==============================================================================
-elif bereich == "8. Krypto-ETFs & Kapitalflüsse":
+elif bereich == "9. Krypto-ETFs & Kapitalflüsse":
     st.header("🪙 Krypto-ETFs & Institutionelle Kapitalflüsse (€)")
     st.write("Übersicht über Kurse in Euro (€) sowie tägliche, 7-Tage- und 30-Tage-Zu-/Abflüsse für deine 7 Fokus-Coins.")
 
