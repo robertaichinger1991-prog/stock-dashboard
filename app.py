@@ -1,15 +1,9 @@
-import io
-import json
-import os
-import urllib.parse
-import urllib.request
-import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
-
+from datetime import datetime
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import requests
 import streamlit as st
 import yfinance as yf
 
@@ -17,7 +11,7 @@ import yfinance as yf
 # SEITEN-KONFIGURATION & DESIGN (Dark-Not-Black Theme)
 # ==============================================================================
 st.set_page_config(
-    page_title="Aktien & Krypto Dashboard (€)",
+    page_title="Aktien & Krypto Cockpit (€)",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -34,60 +28,54 @@ st.markdown(
         background-color: #161B22;
         border: 1px solid #30363D;
         border-radius: 10px;
-        padding: 16px;
-        margin-bottom: 12px;
-    }
-    .news-card {
-        background-color: #161B22;
-        border: 1px solid #30363D;
-        border-left: 4px solid #58A6FF;
-        border-radius: 8px;
-        padding: 14px 16px;
-        margin-bottom: 10px;
+        padding: 18px;
+        margin-bottom: 14px;
     }
     .badge-green {
-        background-color: rgba(0, 200, 83, 0.15);
+        background-color: rgba(0, 200, 83, 0.16);
         color: #00E676;
         border: 1px solid #00C853;
-        padding: 3px 10px;
+        padding: 4px 12px;
         border-radius: 12px;
         font-weight: 600;
-        font-size: 0.85rem;
+        font-size: 0.88rem;
     }
     .badge-red {
-        background-color: rgba(255, 82, 82, 0.15);
+        background-color: rgba(255, 82, 82, 0.16);
         color: #FF5252;
         border: 1px solid #FF5252;
-        padding: 3px 10px;
+        padding: 4px 12px;
         border-radius: 12px;
         font-weight: 600;
-        font-size: 0.85rem;
+        font-size: 0.88rem;
     }
     .badge-amber {
-        background-color: rgba(255, 179, 0, 0.15);
+        background-color: rgba(255, 179, 0, 0.16);
         color: #FFD54F;
         border: 1px solid #FFB300;
-        padding: 3px 10px;
+        padding: 4px 12px;
         border-radius: 12px;
         font-weight: 600;
-        font-size: 0.85rem;
-    }
-    .badge-orange {
-        background-color: rgba(255, 112, 67, 0.18);
-        color: #FF8A65;
-        border: 1px solid #FF7043;
-        padding: 3px 10px;
-        border-radius: 12px;
-        font-weight: 600;
-        font-size: 0.85rem;
+        font-size: 0.88rem;
     }
     .info-box {
         background-color: #161B22;
         border-left: 4px solid #58A6FF;
-        padding: 12px 16px;
+        padding: 14px 18px;
         border-radius: 6px;
         margin: 10px 0;
-        font-size: 0.92rem;
+        font-size: 0.94rem;
+        line-height: 1.55;
+    }
+    .verdict-box {
+        background-color: #161B22;
+        border: 1px solid #30363D;
+        border-left: 5px solid #00E676;
+        padding: 16px 20px;
+        border-radius: 8px;
+        margin: 12px 0;
+        font-size: 0.96rem;
+        line-height: 1.6;
     }
     .warn-box {
         background-color: rgba(255, 82, 82, 0.15);
@@ -104,9 +92,19 @@ st.markdown(
 )
 
 # ==============================================================================
-# VOREINGESTELLTE AKTIEN-LISTEN & KRYPTO-DATEN
+# VOREINGESTELLTE AKTIEN-LISTEN, NAMENS-ZUORDNUNG & KRYPTO-DATEN
 # ==============================================================================
 INDEX_UNIVERSEN = {
+    "China & Hongkong (Tech, E-Auto & Konsum)": [
+        "1810.HK", "1211.HK", "0700.HK", "9988.HK", "3690.HK",
+        "9618.HK", "9888.HK", "0175.HK", "2318.HK", "0981.HK",
+        "NIO", "XPEV", "LI", "PDD"
+    ],
+    "Japan Top-Werte (Nikkei Auswahl)": [
+        "7203.T", "6758.T", "7974.T", "9984.T", "8035.T",
+        "6861.T", "9983.T", "6501.T", "7267.T", "8306.T",
+        "6857.T", "4502.T"
+    ],
     "DAX Auswahl (Deutschland)": [
         "SAP.DE", "SIE.DE", "ALV.DE", "DTE.DE", "ADS.DE",
         "MBG.DE", "BMW.DE", "BAS.DE", "IFX.DE", "MUV2.DE",
@@ -119,8 +117,139 @@ INDEX_UNIVERSEN = {
     ],
     "Europa & Internationale Favoriten": [
         "ASML.AS", "MC.PA", "NOVO-B.CO", "NESN.SW", "SHEL.L",
-        "1211.HK", "1810.HK", "NKE", "DIS", "BA"
+        "NKE", "DIS", "BA"
     ],
+}
+
+# Kombiniertes Global-Universum ohne Duplikate
+INDEX_UNIVERSEN["Alle Märkte kombiniert (Global-Scan)"] = list(
+    dict.fromkeys(
+        ticker
+        for liste in INDEX_UNIVERSEN.values()
+        for ticker in liste
+    )
+)
+
+# Direkte Namens-Suche für ausgeschriebene Aktiennamen (inkl. Aliase)
+BEKANNTE_AKTIEN_NAMEN = {
+    # China & Hongkong
+    "xiaomi": ("1810.HK", "Xiaomi Corporation"),
+    "xiaomi corp": ("1810.HK", "Xiaomi Corporation"),
+    "xiaomi corporation": ("1810.HK", "Xiaomi Corporation"),
+    "byd": ("1211.HK", "BYD Company Limited"),
+    "byd company": ("1211.HK", "BYD Company Limited"),
+    "byd co": ("1211.HK", "BYD Company Limited"),
+    "tencent": ("0700.HK", "Tencent Holdings Limited"),
+    "tencent holdings": ("0700.HK", "Tencent Holdings Limited"),
+    "alibaba": ("9988.HK", "Alibaba Group Holding"),
+    "alibaba group": ("9988.HK", "Alibaba Group Holding"),
+    "meituan": ("3690.HK", "Meituan"),
+    "jd": ("9618.HK", "JD.com, Inc."),
+    "jd.com": ("9618.HK", "JD.com, Inc."),
+    "baidu": ("9888.HK", "Baidu, Inc."),
+    "geely": ("0175.HK", "Geely Automobile Holdings"),
+    "ping an": ("2318.HK", "Ping An Insurance"),
+    "smic": ("0981.HK", "Semiconductor Manufacturing International"),
+    "nio": ("NIO", "NIO Inc."),
+    "xpeng": ("XPEV", "XPeng Inc."),
+    "li auto": ("LI", "Li Auto Inc."),
+    "pinduoduo": ("PDD", "PDD Holdings Inc."),
+    "pdd": ("PDD", "PDD Holdings Inc."),
+    # Japan
+    "toyota": ("7203.T", "Toyota Motor Corporation"),
+    "toyota motor": ("7203.T", "Toyota Motor Corporation"),
+    "sony": ("6758.T", "Sony Group Corporation"),
+    "sony group": ("6758.T", "Sony Group Corporation"),
+    "nintendo": ("7974.T", "Nintendo Co., Ltd."),
+    "softbank": ("9984.T", "SoftBank Group Corp."),
+    "softbank group": ("9984.T", "SoftBank Group Corp."),
+    "tokyo electron": ("8035.T", "Tokyo Electron Limited"),
+    "keyence": ("6861.T", "Keyence Corporation"),
+    "fast retailing": ("9983.T", "Fast Retailing Co., Ltd. (Uniqlo)"),
+    "uniqlo": ("9983.T", "Fast Retailing Co., Ltd. (Uniqlo)"),
+    "hitachi": ("6501.T", "Hitachi, Ltd."),
+    "honda": ("7267.T", "Honda Motor Co., Ltd."),
+    "honda motor": ("7267.T", "Honda Motor Co., Ltd."),
+    "mitsubishi ufj": ("8306.T", "Mitsubishi UFJ Financial Group"),
+    "advantest": ("6857.T", "Advantest Corporation"),
+    "takeda": ("4502.T", "Takeda Pharmaceutical"),
+    "panasonic": ("6752.T", "Panasonic Holdings"),
+    "komatsu": ("6301.T", "Komatsu Ltd."),
+    # Deutschland & Europa
+    "sap": ("SAP.DE", "SAP SE"),
+    "siemens": ("SIE.DE", "Siemens AG"),
+    "siemens energy": ("ENR.DE", "Siemens Energy AG"),
+    "allianz": ("ALV.DE", "Allianz SE"),
+    "deutsche telekom": ("DTE.DE", "Deutsche Telekom AG"),
+    "telekom": ("DTE.DE", "Deutsche Telekom AG"),
+    "adidas": ("ADS.DE", "adidas AG"),
+    "mercedes": ("MBG.DE", "Mercedes-Benz Group AG"),
+    "mercedes-benz": ("MBG.DE", "Mercedes-Benz Group AG"),
+    "bmw": ("BMW.DE", "Bayerische Motoren Werke AG"),
+    "basf": ("BAS.DE", "BASF SE"),
+    "infineon": ("IFX.DE", "Infineon Technologies AG"),
+    "münchener rück": ("MUV2.DE", "Münchener Rückversicherungs-Gesellschaft"),
+    "munich re": ("MUV2.DE", "Münchener Rückversicherungs-Gesellschaft"),
+    "rheinmetall": ("RHM.DE", "Rheinmetall AG"),
+    "dhl": ("DHL.DE", "Deutsche Post AG (DHL)"),
+    "deutsche post": ("DHL.DE", "Deutsche Post AG (DHL)"),
+    "airbus": ("AIR.DE", "Airbus SE"),
+    "bayer": ("BAYN.DE", "Bayer AG"),
+    "volkswagen": ("VOW3.DE", "Volkswagen AG"),
+    "vw": ("VOW3.DE", "Volkswagen AG"),
+    "asml": ("ASML.AS", "ASML Holding N.V."),
+    "lvmh": ("MC.PA", "LVMH Moët Hennessy Louis Vuitton"),
+    "novo nordisk": ("NOVO-B.CO", "Novo Nordisk A/S"),
+    "nestle": ("NESN.SW", "Nestlé S.A."),
+    "nestlé": ("NESN.SW", "Nestlé S.A."),
+    "shell": ("SHEL.L", "Shell plc"),
+    # USA
+    "apple": ("AAPL", "Apple Inc."),
+    "microsoft": ("MSFT", "Microsoft Corporation"),
+    "nvidia": ("NVDA", "NVIDIA Corporation"),
+    "amazon": ("AMZN", "Amazon.com, Inc."),
+    "alphabet": ("GOOGL", "Alphabet Inc. (Google)"),
+    "google": ("GOOGL", "Alphabet Inc. (Google)"),
+    "meta": ("META", "Meta Platforms, Inc."),
+    "facebook": ("META", "Meta Platforms, Inc."),
+    "tesla": ("TSLA", "Tesla, Inc."),
+    "broadcom": ("AVGO", "Broadcom Inc."),
+    "amd": ("AMD", "Advanced Micro Devices, Inc."),
+    "netflix": ("NFLX", "Netflix, Inc."),
+    "take-two": ("TTWO", "Take-Two Interactive Software"),
+    "take two": ("TTWO", "Take-Two Interactive Software"),
+    "salesforce": ("CRM", "Salesforce, Inc."),
+    "palantir": ("PLTR", "Palantir Technologies Inc."),
+    "paypal": ("PYPL", "PayPal Holdings, Inc."),
+    "intel": ("INTC", "Intel Corporation"),
+    "nike": ("NKE", "NIKE, Inc."),
+    "disney": ("DIS", "The Walt Disney Company"),
+    "boeing": ("BA", "The Boeing Company"),
+    "circle": ("CRCL", "Circle Internet Group"),
+}
+
+SCHNELLAUSWAHL_AKTIEN = {
+    "Xiaomi Corporation (1810.HK) 🇨🇳": "1810.HK",
+    "BYD Company Limited (1211.HK) 🇨🇳": "1211.HK",
+    "Tencent Holdings (0700.HK) 🇨🇳": "0700.HK",
+    "Alibaba Group (9988.HK) 🇨🇳": "9988.HK",
+    "Toyota Motor Corp. (7203.T) 🇯🇵": "7203.T",
+    "Sony Group Corp. (6758.T) 🇯🇵": "6758.T",
+    "Nintendo Co., Ltd. (7974.T) 🇯🇵": "7974.T",
+    "SoftBank Group (9984.T) 🇯🇵": "9984.T",
+    "Tokyo Electron (8035.T) 🇯🇵": "8035.T",
+    "NVIDIA Corporation (NVDA) 🇺🇸": "NVDA",
+    "Take-Two Interactive (TTWO) 🇺🇸": "TTWO",
+    "Apple Inc. (AAPL) 🇺🇸": "AAPL",
+    "Microsoft Corp. (MSFT) 🇺🇸": "MSFT",
+    "Amazon.com Inc. (AMZN) 🇺🇸": "AMZN",
+    "Tesla Inc. (TSLA) 🇺🇸": "TSLA",
+    "Palantir Technologies (PLTR) 🇺🇸": "PLTR",
+    "Rheinmetall AG (RHM.DE) 🇩🇪": "RHM.DE",
+    "SAP SE (SAP.DE) 🇩🇪": "SAP.DE",
+    "adidas AG (ADS.DE) 🇩🇪": "ADS.DE",
+    "Siemens AG (SIE.DE) 🇩🇪": "SIE.DE",
+    "ASML Holding (ASML.AS) 🇪🇺": "ASML.AS",
 }
 
 KRYPTO_LISTE = [
@@ -133,15 +262,8 @@ KRYPTO_LISTE = [
     {"name": "Hedera", "symbol": "HBAR", "ticker": "HBAR-EUR", "etf_basis_m": 5.0},
 ]
 
-STANDARD_WATCHLIST = [
-    {"ticker": "NVDA", "name": "NVIDIA Corp.", "stueck": 10.0, "einstieg_eur": 112.50},
-    {"ticker": "ADS.DE", "name": "adidas AG", "stueck": 5.0, "einstieg_eur": 218.00},
-    {"ticker": "TTWO", "name": "Take-Two Interactive", "stueck": 8.0, "einstieg_eur": 158.00},
-    {"ticker": "1810.HK", "name": "Xiaomi Corp.", "stueck": 200.0, "einstieg_eur": 3.10},
-]
-
 # ==============================================================================
-# HILFSFUNKTIONEN & CACHING (Schutz vor API-Limits auf Streamlit Cloud)
+# HILFSFUNKTIONEN: NAMENSSUCHE, WÄHRUNGSUMRECHNUNG & INDIKATOREN
 # ==============================================================================
 def bereinige_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Flacht MultiIndex-Spalten von yfinance ab und stellt 1D-Serien sicher."""
@@ -153,80 +275,175 @@ def bereinige_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def erkenne_region(ticker: str) -> str:
+    """Gibt die Börsenregion mit Flagge zurück."""
+    t = ticker.upper()
+    if t.endswith(".HK") or t.endswith(".SS") or t.endswith(".SZ") or t in {"NIO", "XPEV", "LI", "PDD", "BABA", "JD", "BIDU"}:
+        return "🇨🇳 China/HK"
+    if t.endswith(".T"):
+        return "🇯🇵 Japan"
+    if t.endswith(".DE"):
+        return "🇩🇪 Deutschland"
+    if t.endswith((".AS", ".PA", ".CO", ".SW", ".L", ".MC", ".MI")):
+        return "🇪🇺 Europa"
+    return "🇺🇸 USA"
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def suche_ticker_aus_name(eingabe: str) -> tuple[str, str]:
+    """
+    Wandelt sowohl Kürzel (z. B. 1810.HK) als auch ausgeschriebene Firmennamen
+    (z. B. 'Xiaomi', 'BYD', 'Toyota', 'Rheinmetall') zuverlässig in ein Börsen-Kürzel um.
+    """
+    sauber = eingabe.strip()
+    if not sauber:
+        return "1810.HK", "Xiaomi Corporation"
+
+    klein = sauber.lower()
+
+    # 1. Exakter Treffer im kuratierten Verzeichnis
+    if klein in BEKANNTE_AKTIEN_NAMEN:
+        return BEKANNTE_AKTIEN_NAMEN[klein]
+
+    # 2. Teilstring-Treffer für ausgeschriebene Namen (z. B. "Xiaomi Corp", "Toyota Motor")
+    if len(klein) >= 3:
+        for schluessel, (tkr, vollname) in BEKANNTE_AKTIEN_NAMEN.items():
+            if klein in schluessel or schluessel in klein:
+                return tkr, vollname
+
+    # 3. Wenn die Eingabe bereits wie ein echtes Ticker-Symbol aussieht (z. B. 1810.HK, SAP.DE, NVDA)
+    if "." in sauber or "-" in sauber or (sauber.isupper() and len(sauber) <= 5 and " " not in sauber):
+        return sauber.upper(), sauber.upper()
+
+    # 4. Live-Suche über yfinance Search / Yahoo Finance API für beliebige andere Firmennamen
+    try:
+        search_obj = yf.Search(sauber, max_results=8)
+        quotes = getattr(search_obj, "quotes", []) or []
+        if not quotes:
+            resp = requests.get(
+                "https://query2.finance.yahoo.com/v1/finance/search",
+                params={"q": sauber, "quotesCount": 8, "newsCount": 0},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                quotes = resp.json().get("quotes", [])
+
+        bevorzugte_boersen = {"HKG", "JPX", "GER", "FRA", "NMS", "NYQ", "NGM", "AMS", "PAR", "EBS", "LSE"}
+        aktien_treffer = [q for q in quotes if q.get("quoteType") == "EQUITY" and q.get("symbol")]
+        if not aktien_treffer:
+            aktien_treffer = [q for q in quotes if q.get("symbol")]
+
+        # Hauptbörsen gegenüber OTC (PNK) bevorzugen
+        aktien_treffer.sort(
+            key=lambda q: (
+                0 if q.get("exchange") in bevorzugte_boersen else (2 if q.get("exchange") == "PNK" else 1)
+            )
+        )
+        if aktien_treffer:
+            best = aktien_treffer[0]
+            sym = best["symbol"].upper()
+            name = best.get("longname") or best.get("shortname") or sym
+            return sym, name
+    except Exception:
+        pass
+
+    return sauber.upper(), sauber.upper()
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def hole_wechselkurs_zu_eur(waehrung: str) -> float:
-    """Holt den aktuellen Wechselkurs einer Fremdwährung nach Euro (24h Cache)."""
+    """
+    Holt den aktuellen Wechselkurs einer Fremdwährung nach Euro (€) inkl. Invers-Prüfung
+    für JPY, HKD, CNY, USD, CHF, GBP, DKK.
+    """
     if not waehrung or waehrung.upper() == "EUR":
         return 1.0
-    waehrung = waehrung.upper()
-    if waehrung == "GBX":
+
+    w = waehrung.upper()
+    if w == "GBX":  # Britische Pence -> Pfund -> EUR
         return hole_wechselkurs_zu_eur("GBP") / 100.0
+
+    # 1. Direktes Paar versuchen (z. B. HKDEUR=X, JPYEUR=X, USDEUR=X)
     try:
-        paar = f"{waehrung}EUR=X"
-        df = bereinige_dataframe(yf.download(paar, period="5d", interval="1d", progress=False))
-        if not df.empty and "Close" in df.columns:
-            kurs = float(df["Close"].dropna().iloc[-1])
+        df_dir = bereinige_dataframe(yf.download(f"{w}EUR=X", period="5d", interval="1d", progress=False))
+        if not df_dir.empty and "Close" in df_dir.columns:
+            kurs = float(df_dir["Close"].dropna().iloc[-1])
             if kurs > 0:
                 return kurs
     except Exception:
         pass
-    fallback = {"USD": 0.92, "CHF": 1.06, "GBP": 1.19, "HKD": 0.118, "DKK": 0.134}
-    return fallback.get(waehrung, 1.0)
+
+    # 2. Inverses Paar versuchen (z. B. EURJPY=X, EURHKD=X, EURCNY=X – oft liquider!)
+    try:
+        df_inv = bereinige_dataframe(yf.download(f"EUR{w}=X", period="5d", interval="1d", progress=False))
+        if not df_inv.empty and "Close" in df_inv.columns:
+            inv_kurs = float(df_inv["Close"].dropna().iloc[-1])
+            if inv_kurs > 0:
+                return 1.0 / inv_kurs
+    except Exception:
+        pass
+
+    # 3. Realistische Fallback-Richtwerte (falls Yahoo kurzzeitig nicht antwortet)
+    fallback = {
+        "USD": 0.94,
+        "CHF": 1.07,
+        "GBP": 1.20,
+        "HKD": 0.120,
+        "JPY": 0.00615,
+        "CNY": 0.129,
+        "CNH": 0.129,
+        "DKK": 0.134,
+    }
+    return fallback.get(w, 1.0)
+
+
+def leite_waehrung_aus_ticker_ab(ticker: str) -> str:
+    """Bestimmt die Heimatwährung zuverlässig anhand der Börsenendung."""
+    t = ticker.upper()
+    if t.endswith((".DE", ".AS", ".PA", ".MC", ".MI", ".VI", "-EUR")):
+        return "EUR"
+    if t.endswith(".HK"):
+        return "HKD"
+    if t.endswith(".T"):
+        return "JPY"
+    if t.endswith((".SS", ".SZ")):
+        return "CNY"
+    if t.endswith(".SW"):
+        return "CHF"
+    if t.endswith(".L"):
+        return "GBX"
+    if t.endswith(".CO"):
+        return "DKK"
+    return "USD"
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def hole_stammdaten(ticker: str) -> dict:
-    """Holt Firmennamen, Währung, Quartalszahlen, Fundamentaldaten & Analystenziele."""
+    """Holt den vollen Firmennamen, die Heimatwährung und den nächsten Quartalszahlen-Termin."""
+    standard_waehrung = leite_waehrung_aus_ticker_ab(ticker)
     info_daten = {
         "name": ticker,
-        "waehrung": "EUR",
+        "waehrung": standard_waehrung,
         "sektor": "Keine Angabe",
-        "branche": "Keine Angabe",
         "earnings_datum": None,
-        "kgv_trailing": None,
-        "kgv_forward": None,
-        "kuv": None,
-        "kbv": None,
-        "dividende_pct": None,
-        "marktkap_orig": None,
-        "gewinnmarge_pct": None,
-        "roe_pct": None,
-        "beta": None,
-        "ziel_mean": None,
-        "ziel_high": None,
-        "ziel_low": None,
-        "analysten_anzahl": None,
-        "empfehlung": None,
     }
+
+    # Bekannten Vollnamen vorbelegen, falls vorhanden
+    for _, (tkr, vollname) in BEKANNTE_AKTIEN_NAMEN.items():
+        if tkr == ticker.upper():
+            info_daten["name"] = vollname
+            break
+
     try:
         t = yf.Ticker(ticker)
         info = t.info or {}
-        info_daten["name"] = info.get("longName") or info.get("shortName") or ticker
-        info_daten["waehrung"] = info.get("currency") or ("EUR" if ticker.endswith(".DE") else "USD")
-        info_daten["sektor"] = info.get("sector") or "Keine Angabe"
-        info_daten["branche"] = info.get("industry") or "Keine Angabe"
-
-        info_daten["kgv_trailing"] = info.get("trailingPE")
-        info_daten["kgv_forward"] = info.get("forwardPE")
-        info_daten["kuv"] = info.get("priceToSalesTrailing12Months")
-        info_daten["kbv"] = info.get("priceToBook")
-        div_yield = info.get("dividendYield")
-        if div_yield is not None:
-            info_daten["dividende_pct"] = div_yield * 100.0 if div_yield < 0.25 else div_yield
-        info_daten["marktkap_orig"] = info.get("marketCap")
-        pm = info.get("profitMargins")
-        if pm is not None:
-            info_daten["gewinnmarge_pct"] = pm * 100.0
-        roe = info.get("returnOnEquity")
-        if roe is not None:
-            info_daten["roe_pct"] = roe * 100.0
-        info_daten["beta"] = info.get("beta")
-
-        info_daten["ziel_mean"] = info.get("targetMeanPrice")
-        info_daten["ziel_high"] = info.get("targetHighPrice")
-        info_daten["ziel_low"] = info.get("targetLowPrice")
-        info_daten["analysten_anzahl"] = info.get("numberOfAnalystOpinions")
-        info_daten["empfehlung"] = info.get("recommendationKey")
+        if info.get("longName") or info.get("shortName"):
+            info_daten["name"] = info.get("longName") or info.get("shortName")
+        if info.get("currency"):
+            info_daten["waehrung"] = info.get("currency").upper()
+        if info.get("sector"):
+            info_daten["sektor"] = info.get("sector")
 
         cal = t.calendar
         if isinstance(cal, dict) and "Earnings Date" in cal and cal["Earnings Date"]:
@@ -235,20 +452,14 @@ def hole_stammdaten(ticker: str) -> dict:
         elif isinstance(cal, pd.DataFrame) and not cal.empty:
             info_daten["earnings_datum"] = str(cal.iloc[0, 0])[:10]
     except Exception:
-        if ticker.endswith(".DE") or ticker.endswith(".AS") or ticker.endswith(".PA"):
-            info_daten["waehrung"] = "EUR"
-        elif ticker.endswith(".HK"):
-            info_daten["waehrung"] = "HKD"
-        elif ticker.endswith(".SW"):
-            info_daten["waehrung"] = "CHF"
-        else:
-            info_daten["waehrung"] = "USD"
+        pass
+
     return info_daten
 
 
 @st.cache_data(ttl=900, show_spinner=False)
 def lade_kursdaten_eur(ticker: str, zeitraum: str = "1y") -> pd.DataFrame:
-    """Lädt historische Kursdaten, rechnet alles in Euro (€) um und berechnet Indikatoren."""
+    """Lädt historische Kursdaten, rechnet alles sauber in Euro (€) um und berechnet Indikatoren."""
     try:
         raw = yf.download(ticker, period=zeitraum, interval="1d", progress=False)
         df = bereinige_dataframe(raw)
@@ -265,31 +476,34 @@ def lade_kursdaten_eur(ticker: str, zeitraum: str = "1y") -> pd.DataFrame:
         df["Volume"] = pd.to_numeric(df["Volume"], errors="coerce").fillna(0)
         df = df.dropna(subset=["Close"]).copy()
 
-        df["EMA_20"] = df["Close"].ewm(span=20, adjust=False).mean()
+        # Gleitende Durchschnitte (SMA 50 & SMA 200)
         df["SMA_50"] = df["Close"].rolling(window=50).mean()
         df["SMA_200"] = df["Close"].rolling(window=200).mean()
 
+        # RSI (14 Tage nach Wilder-Glättung)
         delta = df["Close"].diff()
         gewinn = delta.clip(lower=0)
         verlust = -delta.clip(upper=0)
         avg_gewinn = gewinn.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
         avg_verlust = verlust.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
         rs = avg_gewinn / avg_verlust.replace(0, np.nan)
-        df["RSI_14"] = 100 - (100 / (1 + rs))
-        df["RSI_14"] = df["RSI_14"].fillna(50)
+        df["RSI_14"] = (100 - (100 / (1 + rs))).fillna(50)
 
+        # MACD (12, 26, 9)
         ema_12 = df["Close"].ewm(span=12, adjust=False).mean()
         ema_26 = df["Close"].ewm(span=26, adjust=False).mean()
         df["MACD"] = ema_12 - ema_26
         df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
         df["MACD_Hist"] = df["MACD"] - df["MACD_Signal"]
 
+        # ATR (14 Tage) für Stop-Loss-Berechnung
         high_low = df["High"] - df["Low"]
         high_close = (df["High"] - df["Close"].shift()).abs()
         low_close = (df["Low"] - df["Close"].shift()).abs()
         true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         df["ATR_14"] = true_range.rolling(window=14).mean()
 
+        # Volumen-Durchschnitt (20 Tage)
         df["Vol_SMA_20"] = df["Volume"].rolling(window=20).mean()
 
         return df
@@ -298,21 +512,24 @@ def lade_kursdaten_eur(ticker: str, zeitraum: str = "1y") -> pd.DataFrame:
 
 
 def analysiere_aktie(ticker: str) -> dict | None:
-    """Erstellt eine vollständige Auswertung in Euro (€) inkl. Einstiegszonen, Kurszielen & Kennzahlen."""
+    """Erstellt eine vollständige, ausführlich begründete Auswertung in Euro (€)."""
     df = lade_kursdaten_eur(ticker, zeitraum="1y")
     if df.empty or len(df) < 50:
         return None
 
     stamm = hole_stammdaten(ticker)
-    faktor = hole_wechselkurs_zu_eur(stamm["waehrung"])
-
+    region = erkenne_region(ticker)
     aktuell = float(df["Close"].iloc[-1])
     vortag = float(df["Close"].iloc[-2])
     tages_diff_pct = ((aktuell - vortag) / vortag) * 100
 
-    ema20 = float(df["EMA_20"].iloc[-1])
     sma50 = float(df["SMA_50"].iloc[-1]) if not pd.isna(df["SMA_50"].iloc[-1]) else aktuell
+    sma50_vor5 = float(df["SMA_50"].iloc[-6]) if len(df) >= 6 and not pd.isna(df["SMA_50"].iloc[-6]) else sma50
     sma200 = float(df["SMA_200"].iloc[-1]) if not pd.isna(df["SMA_200"].iloc[-1]) else sma50
+
+    abstand_sma50_pct = ((aktuell - sma50) / sma50) * 100 if sma50 > 0 else 0.0
+    abstand_sma200_pct = ((aktuell - sma200) / sma200) * 100 if sma200 > 0 else 0.0
+    sma50_zu_200_pct = ((sma50 - sma200) / sma200) * 100 if sma200 > 0 else 0.0
 
     rsi = float(df["RSI_14"].iloc[-1])
     rsi_vor5 = float(df["RSI_14"].iloc[-6]) if len(df) >= 6 else rsi
@@ -322,68 +539,36 @@ def analysiere_aktie(ticker: str) -> dict | None:
 
     vol_aktuell = float(df["Volume"].iloc[-1])
     vol_schnitt = float(df["Vol_SMA_20"].iloc[-1]) if not pd.isna(df["Vol_SMA_20"].iloc[-1]) else vol_aktuell
-    volumen_bestaetigt = vol_aktuell > vol_schnitt and vol_schnitt > 0
+    volumen_faktor = (vol_aktuell / vol_schnitt) if vol_schnitt > 0 else 1.0
+    volumen_bestaetigt = volumen_faktor > 1.10
 
     hoch_52w = float(df["High"].max())
     tief_52w = float(df["Low"].min())
     abstand_hoch_pct = ((aktuell - hoch_52w) / hoch_52w) * 100
+    abstand_tief_pct = ((aktuell - tief_52w) / tief_52w) * 100 if tief_52w > 0 else 0.0
 
-    # --- EINSTIEGSZONEN IN EURO (€) ---
-    recent_low_20d = float(df["Low"].tail(20).min())
-    if aktuell >= sma50:
-        basis_mitte = min(ema20, sma50 + 0.5 * atr)
-        einstieg_von = round(max(tief_52w, min(sma50 - 0.4 * atr, recent_low_20d)), 2)
-        einstieg_bis = round(max(einstieg_von + 0.5 * atr, basis_mitte), 2)
-    else:
-        einstieg_von = round(max(tief_52w, min(aktuell * 0.94, recent_low_20d)), 2)
-        einstieg_bis = round(max(einstieg_von + 0.5 * atr, aktuell * 0.99), 2)
-
-    nachkauf_von = round(max(tief_52w * 0.98, min(sma200 - 0.8 * atr, einstieg_von * 0.92)), 2)
-    nachkauf_bis = round(max(nachkauf_von + 0.4 * atr, min(sma200 + 0.3 * atr, einstieg_von * 0.98)), 2)
-
-    if einstieg_von <= aktuell <= einstieg_bis:
-        einstieg_status = "✅ Kurs liegt aktuell IN der idealen Einstiegszone!"
-        einstieg_farbe = "green"
-    elif aktuell > einstieg_bis:
-        abstand_zone_pct = ((aktuell - einstieg_bis) / aktuell) * 100
-        einstieg_status = f"⏳ Über Einstiegszone (+{abstand_zone_pct:.1f} %) – Rücksetzer abwarten"
-        einstieg_farbe = "amber"
-    else:
-        einstieg_status = "📉 Unterhalb der Trend-Einstiegszone – Bodenbildung / Nachkaufzone prüfen"
-        einstieg_farbe = "red"
-
-    # --- MÖGLICHE KURSZIELE IN EURO (€) ---
-    analysten_ziele_vorhanden = stamm["ziel_mean"] is not None and stamm["ziel_mean"] > 0
-    if analysten_ziele_vorhanden:
-        kursziel_basis = round(float(stamm["ziel_mean"]) * faktor, 2)
-        kursziel_hoch = round(float(stamm["ziel_high"]) * faktor, 2) if stamm["ziel_high"] else round(kursziel_basis * 1.15, 2)
-        kursziel_tief = round(float(stamm["ziel_low"]) * faktor, 2) if stamm["ziel_low"] else round(kursziel_basis * 0.85, 2)
-        kursziel_quelle = f"Analysten-Konsens ({stamm['analysten_anzahl'] or 'k. A.'} Schätzungen)"
-    else:
-        kursziel_basis = round(max(hoch_52w, aktuell + 3.0 * atr), 2)
-        kursziel_hoch = round(kursziel_basis + 2.0 * atr, 2)
-        kursziel_tief = round(max(aktuell, (aktuell + hoch_52w) / 2.0), 2)
-        kursziel_quelle = "Technische Projektion (52W-Hoch & ATR-Spanne)"
-
-    potenzial_basis_pct = ((kursziel_basis - aktuell) / aktuell) * 100
-    potenzial_hoch_pct = ((kursziel_hoch - aktuell) / aktuell) * 100
-
-    # --- SIGNALE & CRV ---
+    # Golden Cross Check (SMA 50 kreuzt SMA 200 in den letzten 7 Handelstagen nach oben)
     golden_cross_neu = False
-    if len(df) >= 6 and not df["SMA_200"].iloc[-6:].isna().any():
-        golden_cross_neu = (df["SMA_50"].iloc[-6] <= df["SMA_200"].iloc[-6]) and (sma50 > sma200)
+    if len(df) >= 8 and not df["SMA_200"].iloc[-8:].isna().any():
+        golden_cross_neu = (df["SMA_50"].iloc[-8] <= df["SMA_200"].iloc[-8]) and (sma50 > sma200)
+    golden_cross_nah = (not golden_cross_neu) and (-2.5 <= sma50_zu_200_pct < 0.0) and (sma50 > sma50_vor5)
 
+    # Trend-Follower Check
     ist_trend_follower = (aktuell > sma50) and (sma50 > sma200) and (45 <= rsi <= 72)
 
+    # TFA-Check (Turnaround-Formel: >= 35% unter 52W-Hoch + erste Bodenbildung / Kaufdruck)
     ist_tfa = (abstand_hoch_pct <= -35.0) and (
         (rsi < 38) or (rsi_vor5 < 35 and rsi > rsi_vor5) or (aktuell > sma50 and macd_hist > macd_hist_vortag)
     )
 
+    # ATR-Stop-Loss & Chance-Risiko-Verhältnis (CRV)
     stop_loss_eur = max(0.01, aktuell - 2.0 * atr)
+    stop_puffer_pct = ((aktuell - stop_loss_eur) / aktuell) * 100
     risiko_eur = max(0.01, aktuell - stop_loss_eur)
-    chance_eur = max(0.0, kursziel_basis - aktuell)
+    chance_eur = max(0.0, hoch_52w - aktuell)
     crv = round(chance_eur / risiko_eur, 2)
 
+    # Earnings-Warnung prüfen
     earnings_warnung = None
     if stamm["earnings_datum"]:
         try:
@@ -394,46 +579,131 @@ def analysiere_aktie(ticker: str) -> dict | None:
         except Exception:
             pass
 
+    # --------------------------------------------------------------------------
+    # AUSFÜHRLICHE BEGRÜNDUNGEN & KLARTEXT-GESAMTURTEIL
+    # --------------------------------------------------------------------------
     if golden_cross_neu:
-        signal_text = "Kaufsignal (Frisches Golden Cross)"
+        signal_text = "Starkes Kaufsignal (Frisches Golden Cross)"
         signal_farbe = "green"
+        kurz_begruendung = f"SMA 50 hat SMA 200 frisch nach oben gekreuzt; Kurs {abstand_sma50_pct:+.1f} % über SMA 50 (RSI {rsi:.0f})."
+        gesamtfazit = (
+            f"Bei {stamm['name']} hat die 50-Tage-Linie ({sma50:.2f} €) soeben die 200-Tage-Linie ({sma200:.2f} €) "
+            f"von unten nach oben durchbrochen – ein klassisches, langfristig bullisches Golden-Cross-Kaufsignal. "
+            f"Mit einem RSI von {rsi:.1f} hat die Aktie noch ausreichend Luft nach oben, ohne überhitzt zu sein. "
+            f"Ein Einstieg oder Teilkauf bietet sich an, abgesichert durch einen Stop-Loss bei {stop_loss_eur:.2f} € (-{stop_puffer_pct:.1f} %)."
+        )
     elif ist_trend_follower and volumen_bestaetigt and macd_hist > 0:
-        signal_text = "Starker Aufwärtstrend (Kaufen / Halten)"
+        signal_text = "Starker Aufwärtstrend – Kaufen / Halten"
         signal_farbe = "green"
+        kurz_begruendung = f"Sauberer Aufwärtstrend ({abstand_sma50_pct:+.1f} % über SMA 50), hohes Volumen ({volumen_faktor:.1f}×) & steigender MACD."
+        gesamtfazit = (
+            f"{stamm['name']} befindet sich in einem voll intakten Aufwärtstrend: Der Kurs notiert {abstand_sma50_pct:+.1f} % über der "
+            f"50-Tage-Linie ({sma50:.2f} €) und {abstand_sma200_pct:+.1f} % über der 200-Tage-Linie ({sma200:.2f} €). "
+            f"Das überdurchschnittliche Handelsvolumen ({volumen_faktor:.1f}-facher Schnitt) und der positive MACD bestätigen den Kaufdruck. "
+            f"Bestehende Positionen laufen lassen; Neueinstiege lassen sich bei {stop_loss_eur:.2f} € absichern (CRV {crv:.1f} : 1)."
+        )
+    elif ist_trend_follower:
+        signal_text = "Intakter Aufwärtstrend – Halten / Rücksetzer nutzen"
+        signal_farbe = "green"
+        kurz_begruendung = f"Über SMA 50 ({abstand_sma50_pct:+.1f} %) und SMA 200 ({abstand_sma200_pct:+.1f} %), RSI {rsi:.0f} im gesunden Bereich."
+        gesamtfazit = (
+            f"Der übergeordnete Trend bei {stamm['name']} zeigt klar nach oben, da sowohl SMA 50 ({sma50:.2f} €) als auch "
+            f"SMA 200 ({sma200:.2f} €) unterhalb des aktuellen Kurses verlaufen. Der RSI liegt bei ausgeglichenen {rsi:.1f} Punkten. "
+            f"Da das Volumen zuletzt unauffällig war, sind kleine Rücksetzer in Richtung der 50-Tage-Linie ({sma50:.2f} €) "
+            f"besonders interessante Einstiegsgelegenheiten."
+        )
     elif ist_tfa:
-        signal_text = "Turnaround-Chance (TFA-Signal)"
+        signal_text = "Turnaround-Chance (TFA-Signal) – Antizyklisch beobachten"
         signal_farbe = "amber"
-    elif rsi > 75:
-        signal_text = "Überhitzt – Teilgewinne absichern"
+        kurz_begruendung = f"{abs(abstand_hoch_pct):.0f} % unter 52W-Hoch; RSI ({rsi:.0f}) dreht aus überverkaufter Zone nach oben."
+        gesamtfazit = (
+            f"{stamm['name']} notiert mit {abstand_hoch_pct:.1f} % deutlich unter seinem 52-Wochen-Hoch ({hoch_52w:.2f} €) "
+            f"und erfüllt damit das Hauptkriterium der Turnaround-Formel (TFA). Erste Stabilisierungszeichen sind sichtbar "
+            f"(RSI bei {rsi:.1f}, Trend vom 5-Tages-Tief drehend). Für risikobewusste Anleger bietet sich ein gestaffelter "
+            f"Einstieg mit engem Stop-Loss bei {stop_loss_eur:.2f} € an (CRV {crv:.1f} : 1 bis zum Jahreshoch)."
+        )
+    elif rsi > 74:
+        signal_text = "Stark überhitzt – Teilgewinne absichern"
         signal_farbe = "red"
+        kurz_begruendung = f"RSI bei {rsi:.0f} (überkauft) und bereits {abstand_sma50_pct:+.1f} % über SMA 50 – Rücksetzer-Gefahr."
+        gesamtfazit = (
+            f"Nach einer steilen Rallye ist {stamm['name']} mit einem RSI von {rsi:.1f} technisch stark überkauft und hat sich "
+            f"bereits {abstand_sma50_pct:+.1f} % weit von seiner 50-Tage-Linie ({sma50:.2f} €) entfernt. Neue Käufe auf diesem "
+            f"Niveau haben ein erhöhtes Rückschlagrisiko. Wer investiert ist, sollte den Stop-Loss auf {stop_loss_eur:.2f} € "
+            f"nachziehen oder Teilgewinne mitnehmen."
+        )
     elif aktuell < sma50 and aktuell < sma200:
-        signal_text = "Abwärtstrend – Abwarten"
+        signal_text = "Abwärtstrend aktiv – Vorerst abwarten"
         signal_farbe = "red"
+        kurz_begruendung = f"Unter SMA 50 ({abstand_sma50_pct:.1f} %) und SMA 200 ({abstand_sma200_pct:.1f} %) – kein Boden bestätigt."
+        gesamtfazit = (
+            f"{stamm['name']} befindet sich aktuell unter beiden wichtigen Trendlinien (SMA 50 bei {sma50:.2f} € und "
+            f"SMA 200 bei {sma200:.2f} €). Solange der Kurs die 50-Tage-Linie nicht zurückerobert und der MACD negativ bleibt, "
+            f"dominiert der Verkaufsdruck. Ein Einstieg drängt sich noch nicht auf – erst eine Bodenbildung über {sma50:.2f} € abwarten."
+        )
     else:
-        signal_text = "Neutral / Beobachten"
+        richtung_text = (
+            "knapp unter der 50-Tage-Linie und testet diese als Widerstand"
+            if aktuell < sma50
+            else "über der 50-Tage-Linie, kämpft aber noch mit der 200-Tage-Linie"
+        )
+        gc_zusatz = " Ein Golden Cross steht kurz bevor!" if golden_cross_nah else ""
+        signal_text = "Neutral / Konsolidierung – Ausbruch abwarten"
         signal_farbe = "amber"
+        kurz_begruendung = f"Kurs {abstand_sma50_pct:+.1f} % zu SMA 50, {abstand_sma200_pct:+.1f} % zu SMA 200 (RSI {rsi:.0f}) – Seitwärtsphase."
+        gesamtfazit = (
+            f"{stamm['name']} bewegt sich derzeit in einer Übergangs- bzw. Seitwärtsphase: Der Kurs liegt {richtung_text}.{gc_zusatz} "
+            f"Mit einem RSI von {rsi:.1f} liegt weder eine Übertreibung noch ein Panikverkauf vor. "
+            f"Ein neues Kaufsignal entsteht erst bei einem dynamischen Ausbruch über {max(sma50, sma200):.2f} € unter erhöhtem Volumen."
+        )
 
-    marktkap_eur_mrd = None
-    if stamm["marktkap_orig"]:
-        marktkap_eur_mrd = round((float(stamm["marktkap_orig"]) * faktor) / 1e9, 2)
+    # Detaillierte Einzelbausteine für die Detailansicht
+    trend_detail = (
+        f"Der aktuelle Kurs von <b>{aktuell:.2f} €</b> liegt <b>{abstand_sma50_pct:+.1f} %</b> "
+        f"{'über' if aktuell >= sma50 else 'unter'} der 50-Tage-Linie (<b>{sma50:.2f} €</b>) und "
+        f"<b>{abstand_sma200_pct:+.1f} %</b> {'über' if aktuell >= sma200 else 'unter'} der 200-Tage-Linie (<b>{sma200:.2f} €</b>). "
+        f"Die 50-Tage-Linie verläuft aktuell {'über (+' + f'{sma50_zu_200_pct:.1f} %)' if sma50 >= sma200 else 'unter (' + f'{sma50_zu_200_pct:.1f} %)'} "
+        f"der 200-Tage-Linie{' – ein frisches Golden Cross wurde erkannt!' if golden_cross_neu else '.'}"
+    )
 
-    empfehlung_map = {
-        "strong_buy": "Starker Kauf (Strong Buy)",
-        "buy": "Kaufen (Buy)",
-        "hold": "Halten (Hold)",
-        "underperform": "Untergewichten",
-        "sell": "Verkaufen (Sell)",
-    }
-    empfehlung_de = empfehlung_map.get(str(stamm["empfehlung"]).lower(), "Keine Einstufung")
+    if rsi > 70:
+        rsi_bewertung = "überkauft (erhöhte Rücksetzer-Gefahr)"
+    elif rsi < 30:
+        rsi_bewertung = "stark überverkauft (technische Gegenbewegung wahrscheinlich)"
+    elif rsi >= 50:
+        rsi_bewertung = "bullisch & dynamisch (Käufer haben die Oberhand)"
+    else:
+        rsi_bewertung = "verhalten / schwach (Käufer halten sich noch zurück)"
+
+    momentum_detail = (
+        f"Der <b>RSI (14 Tage)</b> steht bei <b>{rsi:.1f}</b> (vor 5 Tagen: {rsi_vor5:.1f}) und gilt damit als <b>{rsi_bewertung}</b>. "
+        f"Das <b>MACD-Histogramm</b> ist aktuell <b>{'positiv' if macd_hist > 0 else 'negativ'}</b> und "
+        f"<b>{'steigend (zunehmender Kaufdruck)' if macd_hist > macd_hist_vortag else 'fallend (nachlassender Schwung)'}</b>. "
+        f"Das Handelsvolumen erreicht das <b>{volumen_faktor:.2f}-fache</b> des 20-Tage-Schnitts."
+    )
+
+    if crv >= 2.0:
+        crv_text = "sehr attraktiv (mögliche Gewinnspanne bis zum Jahreshoch ist mindestens doppelt so groß wie das Stop-Loss-Risiko)"
+    elif crv >= 1.2:
+        crv_text = "solide / moderat (akzeptables Verhältnis, enge Absicherung sinnvoll)"
+    else:
+        crv_text = "gering (Kurs notiert bereits sehr nah am Jahreshoch oder die Tagesschwankung ist hoch)"
+
+    risiko_detail = (
+        f"Die 52-Wochen-Spanne reicht von <b>{tief_52w:.2f} €</b> (+{abstand_tief_pct:.1f} % vom Tief) bis "
+        f"<b>{hoch_52w:.2f} €</b> ({abstand_hoch_pct:.1f} % unter Hoch). Basierend auf der aktuellen Schwankungsbreite (ATR: {atr:.2f} €) "
+        f"ergibt sich ein sinnvoller Stop-Loss bei <b>{stop_loss_eur:.2f} €</b> (-{stop_puffer_pct:.1f} % Puffer) "
+        f"und ein Chance-Risiko-Verhältnis von <b>{crv:.1f} : 1</b> – das ist <b>{crv_text}</b>."
+    )
 
     return {
         "ticker": ticker,
         "name": stamm["name"],
+        "region": region,
+        "waehrung_orig": stamm["waehrung"],
         "sektor": stamm["sektor"],
-        "branche": stamm["branche"],
         "kurs_eur": aktuell,
         "tages_diff_pct": tages_diff_pct,
-        "ema20_eur": ema20,
         "sma50_eur": sma50,
         "sma200_eur": sma200,
         "rsi": rsi,
@@ -444,35 +714,18 @@ def analysiere_aktie(ticker: str) -> dict | None:
         "tief_52w_eur": tief_52w,
         "abstand_hoch_pct": abstand_hoch_pct,
         "stop_loss_eur": stop_loss_eur,
+        "stop_puffer_pct": stop_puffer_pct,
         "crv": crv,
-        "einstieg_von": einstieg_von,
-        "einstieg_bis": einstieg_bis,
-        "nachkauf_von": nachkauf_von,
-        "nachkauf_bis": nachkauf_bis,
-        "einstieg_status": einstieg_status,
-        "einstieg_farbe": einstieg_farbe,
-        "kursziel_tief": kursziel_tief,
-        "kursziel_basis": kursziel_basis,
-        "kursziel_hoch": kursziel_hoch,
-        "potenzial_basis_pct": potenzial_basis_pct,
-        "potenzial_hoch_pct": potenzial_hoch_pct,
-        "kursziel_quelle": kursziel_quelle,
-        "analysten_vorhanden": analysten_ziele_vorhanden,
-        "empfehlung_de": empfehlung_de,
-        "kgv_trailing": stamm["kgv_trailing"],
-        "kgv_forward": stamm["kgv_forward"],
-        "kuv": stamm["kuv"],
-        "kbv": stamm["kbv"],
-        "dividende_pct": stamm["dividende_pct"],
-        "marktkap_eur_mrd": marktkap_eur_mrd,
-        "gewinnmarge_pct": stamm["gewinnmarge_pct"],
-        "roe_pct": stamm["roe_pct"],
-        "beta": stamm["beta"],
         "golden_cross": golden_cross_neu,
         "ist_trend_follower": ist_trend_follower,
         "ist_tfa": ist_tfa,
         "signal_text": signal_text,
         "signal_farbe": signal_farbe,
+        "kurz_begruendung": kurz_begruendung,
+        "gesamtfazit": gesamtfazit,
+        "trend_detail": trend_detail,
+        "momentum_detail": momentum_detail,
+        "risiko_detail": risiko_detail,
         "earnings_datum": stamm["earnings_datum"],
         "earnings_warnung": earnings_warnung,
         "df": df,
@@ -524,625 +777,142 @@ def berechne_markt_sentiment() -> dict:
     return {"punkte": punkte, "label": label, "vix": round(vix_aktuell, 2)}
 
 
-# ==============================================================================
-# FRED LIVE-DATEN & REZESSIONS-BAROMETER (MIT ROBUSTEM FALLBACK)
-# ==============================================================================
-@st.cache_data(ttl=10800, show_spinner=False)
-def lade_fred_serie(series_id: str) -> pd.Series:
-    """Lädt eine Zeitreihe von FRED ohne API-Key (mit Browser-Headern & sauberer '.'-Bereinigung)."""
-    start_datum = (datetime.now() - timedelta(days=2300)).strftime("%Y-%m-%d")
-    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}&cosd={start_datum}"
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-            "Accept": "text/csv,text/plain,*/*",
-            "Referer": f"https://fred.stlouisfed.org/series/{series_id}",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=12) as resp:
-        csv_text = resp.read().decode("utf-8", errors="ignore")
+def berechne_backtest_signale(df: pd.DataFrame, strategie: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Erzeugt saubere, nicht-überlappende Kauf-, Verkaufs- und Golden-Cross-Signale
+    ohne Kapitalentwicklung.
+    """
+    df_bt = df.copy()
+    sma50_vor = df_bt["SMA_50"].shift(1)
+    sma200_vor = df_bt["SMA_200"].shift(1)
+    close_vor = df_bt["Close"].shift(1)
+    rsi_vor = df_bt["RSI_14"].shift(1)
+    macd_vor = df_bt["MACD_Hist"].shift(1)
 
-    if "<html" in csv_text.lower():
-        raise ValueError("FRED lieferte HTML statt CSV")
+    # Exakte Golden-Cross- & Death-Cross-Tage (Kreuzungspunkte von SMA 50 & SMA 200)
+    df_bt["Golden_Cross"] = (sma50_vor <= sma200_vor) & (df_bt["SMA_50"] > df_bt["SMA_200"])
+    df_bt["Death_Cross"] = (sma50_vor >= sma200_vor) & (df_bt["SMA_50"] < df_bt["SMA_200"])
 
-    df = pd.read_csv(io.StringIO(csv_text), na_values=[".", "NA", ""])
-    if df.shape[1] < 2:
-        raise ValueError("Ungültiges CSV-Format")
+    # Saubere Zustandsmaschine: Kauf- und Verkaufssignale wechseln sich logisch ab (kein Signal-Spam)
+    kauf_flags = []
+    verkauf_flags = []
+    ereignisse = []
+    in_position = False
+    einstiegspreis = 0.0
 
-    datum_spalte = df.columns[0]
-    wert_spalte = df.columns[1]
-    df[datum_spalte] = pd.to_datetime(df[datum_spalte], errors="coerce")
-    df[wert_spalte] = pd.to_numeric(df[wert_spalte], errors="coerce")
-    df = df.dropna(subset=[datum_spalte, wert_spalte]).sort_values(datum_spalte)
-    if df.empty:
-        raise ValueError("Leere FRED-Zeitreihe")
-    return pd.Series(df[wert_spalte].values, index=df[datum_spalte], name=series_id)
+    for idx, row in df_bt.iterrows():
+        c = float(row["Close"])
+        s50 = float(row["SMA_50"]) if not pd.isna(row["SMA_50"]) else c
+        s200 = float(row["SMA_200"]) if not pd.isna(row["SMA_200"]) else s50
+        r = float(row["RSI_14"])
+        mh = float(row["MACD_Hist"])
+        gc = bool(row["Golden_Cross"])
+        dc = bool(row["Death_Cross"])
 
+        c_prev = float(close_vor.loc[idx]) if not pd.isna(close_vor.loc[idx]) else c
+        s50_prev = float(sma50_vor.loc[idx]) if not pd.isna(sma50_vor.loc[idx]) else s50
+        r_prev = float(rsi_vor.loc[idx]) if not pd.isna(rsi_vor.loc[idx]) else r
+        mh_prev = float(macd_vor.loc[idx]) if not pd.isna(macd_vor.loc[idx]) else mh
 
-def hole_makro_serie_ausfallsicher(series_id: str) -> tuple[pd.Series, str]:
-    """Versucht FRED live zu laden; nutzt bei Server-Blockade Live-Markt-Proxys oder Referenzdaten."""
-    try:
-        s = lade_fred_serie(series_id)
-        return s, "FRED Live"
-    except Exception:
-        pass
+        kauf_trigger = False
+        verkauf_trigger = False
+        grund = ""
 
-    if series_id == "T10Y2Y":
-        try:
-            tnx = bereinige_dataframe(yf.download("^TNX", period="5y", interval="1d", progress=False))["Close"].dropna()
-            irx = bereinige_dataframe(yf.download("^IRX", period="5y", interval="1d", progress=False))["Close"].dropna()
-            spread = (tnx - irx).dropna()
-            if len(spread) > 20:
-                return spread, "Markt-Proxy (Yahoo)"
-        except Exception:
-            pass
+        if strategie == "Nur Golden Cross & Death Cross (SMA 50 / SMA 200)":
+            if not in_position and gc:
+                kauf_trigger = True
+                grund = "Golden Cross (SMA 50 kreuzt SMA 200 nach oben)"
+            elif in_position and (dc or c < s200 * 0.96):
+                verkauf_trigger = True
+                grund = "Death Cross" if dc else "Bruch unter SMA 200 (-4 %)"
 
-    daten_basis = {
-        "SAHMREALTIME": [0.13, 0.17, 0.23, 0.30, 0.37, 0.43, 0.53, 0.57, 0.50, 0.43, 0.43, 0.40],
-        "T10Y2Y": [-0.45, -0.38, -0.25, -0.12, 0.05, 0.14, 0.22, 0.28, 0.34, 0.41, 0.46, 0.52],
-        "BAMLH0A0HYM2": [3.45, 3.30, 3.18, 3.10, 3.25, 3.15, 2.95, 2.88, 2.92, 3.05, 3.12, 3.18],
-        "UMCSENT": [76.9, 79.4, 77.2, 69.1, 68.2, 66.4, 67.9, 70.1, 70.5, 71.8, 74.0, 71.5],
-        "CPIAUCSL": [100.0, 100.3, 100.5, 100.7, 100.8, 101.0, 101.2, 101.4, 101.6, 101.8, 102.0, 102.2,
-                     102.5, 102.8, 103.0, 103.2, 103.4, 103.6, 103.8, 104.0, 104.2, 104.4, 104.6, 104.8],
-        "FEDFUNDS": [5.33, 5.33, 5.33, 5.33, 5.13, 4.83, 4.65, 4.58, 4.33, 4.33, 4.08, 3.83],
-    }
-    werte = daten_basis.get(series_id, [1.0, 1.0])
-    idx = pd.date_range(end=datetime.now(), periods=len(werte), freq="ME")
-    return pd.Series(werte, index=idx, name=series_id), "Referenz-Cache"
+        elif strategie == "Trend-Pullback & Ausbruch (SMA 50 + RSI)":
+            if not in_position:
+                if (c_prev <= s50_prev and c > s50 and 42 <= r <= 68):
+                    kauf_trigger = True
+                    grund = "Ausbruch über SMA 50 im gesunden RSI-Bereich"
+                elif (r_prev < 30 and r >= 30):
+                    kauf_trigger = True
+                    grund = "RSI-Bodenbildung (Erholung aus überverkaufter Zone)"
+            else:
+                if (c_prev >= s50_prev and c < s50 * 0.985):
+                    verkauf_trigger = True
+                    grund = "Trendbruch unter SMA 50"
+                elif (r > 75 and mh < mh_prev):
+                    verkauf_trigger = True
+                    grund = "Überkauft (RSI > 75) & fallender MACD"
 
+        else:  # Kombi-Strategie: Golden Cross + Trend & RSI
+            if not in_position:
+                if gc:
+                    kauf_trigger = True
+                    grund = "Golden Cross (SMA 50 kreuzt SMA 200 nach oben)"
+                elif (s50 > s200 and c_prev <= s50_prev and c > s50 and 40 <= r <= 68):
+                    kauf_trigger = True
+                    grund = "Trend-Bestätigung über SMA 50 im Aufwärtstrend"
+                elif (r_prev < 30 and r >= 30 and c > s200 * 0.90):
+                    kauf_trigger = True
+                    grund = "Antizyklische RSI-Wende (> 30)"
+            else:
+                if dc:
+                    verkauf_trigger = True
+                    grund = "Death Cross (SMA 50 kreuzt SMA 200 nach unten)"
+                elif (c < s50 * 0.97 and mh < 0):
+                    verkauf_trigger = True
+                    grund = "Trendbruch unter SMA 50 mit negativem MACD"
+                elif (r > 76 and mh < mh_prev):
+                    verkauf_trigger = True
+                    grund = "Stark überhitzt (RSI > 76) – Gewinnmitnahme"
 
-@st.cache_data(ttl=10800, show_spinner=False)
-def berechne_rezessions_barometer() -> dict:
-    """Berechnet den Gesamt-Score (0-100) und alle 6 US-Makro- & Zinsindikatoren."""
-    s_sahm, src_sahm = hole_makro_serie_ausfallsicher("SAHMREALTIME")
-    s_curve, src_curve = hole_makro_serie_ausfallsicher("T10Y2Y")
-    s_hy, src_hy = hole_makro_serie_ausfallsicher("BAMLH0A0HYM2")
-    s_sent, src_sent = hole_makro_serie_ausfallsicher("UMCSENT")
-    s_cpi_raw, src_cpi = hole_makro_serie_ausfallsicher("CPIAUCSL")
-    s_fed, src_fed = hole_makro_serie_ausfallsicher("FEDFUNDS")
-
-    s_cpi_yoy = ((s_cpi_raw / s_cpi_raw.shift(12)) - 1.0) * 100.0
-    s_cpi_yoy = s_cpi_yoy.dropna()
-    if s_cpi_yoy.empty:
-        s_cpi_yoy = pd.Series([2.5, 2.4], index=pd.date_range(end=datetime.now(), periods=2, freq="ME"))
-
-    start_5y = pd.Timestamp.now() - pd.DateOffset(years=5)
-    indikatoren = []
-
-    # 1. Sahm-Regel (SAHMREALTIME)
-    v_sahm = float(s_sahm.iloc[-1])
-    v_sahm_prev = float(s_sahm.iloc[-2]) if len(s_sahm) >= 2 else v_sahm
-    if v_sahm >= 0.50:
-        r_sahm = int(np.clip(85 + (v_sahm - 0.50) * 30, 85, 100))
-        st_sahm, col_sahm = "Alarmsignal (≥ 0,50)", "red"
-        fazit_sahm = "Die Sahm-Regel hat ausgelöst – historisch ein starkes Rezessionszeichen am US-Arbeitsmarkt."
-    elif v_sahm >= 0.30:
-        r_sahm = int(45 + ((v_sahm - 0.30) / 0.20) * 30)
-        st_sahm, col_sahm = "Vorwarnstufe", "amber"
-        fazit_sahm = "Die Arbeitslosigkeit zieht spürbar an – der Arbeitsmarkt nähert sich der kritischen 0,50-Schwelle."
-    else:
-        r_sahm = int(np.clip((v_sahm / 0.30) * 25, 5, 25))
-        st_sahm, col_sahm = "Entspannt", "green"
-        fazit_sahm = "Der US-Arbeitsmarkt zeigt sich stabil; kein akutes Rezessionssignal."
-
-    indikatoren.append({
-        "id": "SAHMREALTIME",
-        "titel": "1. Sahm-Regel (SAHMREALTIME)",
-        "untertitel": "Echtzeit-Warnsignal für den US-Arbeitsmarkt",
-        "wert": v_sahm,
-        "delta": v_sahm - v_sahm_prev,
-        "einheit": "Pkt.",
-        "stand": f"{s_sahm.index[-1].strftime('%d.%m.%Y')} ({src_sahm})",
-        "risiko": r_sahm,
-        "gewicht": 0.25,
-        "status": st_sahm,
-        "farbe": col_sahm,
-        "fazit": fazit_sahm,
-        "erklaerung": (
-            "Die **Sahm-Regel** vergleicht den 3-Monats-Durchschnitt der US-Arbeitslosenquote mit ihrem "
-            "Tiefstand der letzten 12 Monate. Steigt die Arbeitslosigkeit schnell an, brechen Konsum und "
-            "Wirtschaftswachstum oft kurz darauf ein."
-        ),
-        "schwellenwerte": (
-            "- **Unter 0,30 Pkt. (Grün):** Gesunder, stabiler Arbeitsmarkt.\n"
-            "- **0,30 bis 0,49 Pkt. (Gelb):** Spürbare Abkühlung – erhöhte Aufmerksamkeit.\n"
-            "- **Ab 0,50 Pkt. (Rot):** Offizielles Sahm-Rezessionssignal (traf in fast allen US-Rezessionen seit 1970 zu)."
-        ),
-        "verlauf": s_sahm[s_sahm.index >= start_5y],
-        "linien": [
-            {"y": 0.50, "color": "#FF5252", "text": "Alarmschwelle (0,50)"},
-            {"y": 0.30, "color": "#FFB300", "text": "Vorwarnung (0,30)"},
-        ],
-    })
-
-    # 2. US-Zinskurve (T10Y2Y)
-    v_curve = float(s_curve.iloc[-1])
-    v_curve_prev = float(s_curve.iloc[-22]) if len(s_curve) >= 22 else float(s_curve.iloc[-2])
-    if v_curve < 0.0:
-        r_curve = int(np.clip(70 + abs(v_curve) * 20, 70, 95))
-        st_curve, col_curve = "Invertiert (< 0 %)", "red"
-        fazit_curve = "Die Zinskurve ist invers – kurzfristige Zinsen liegen über den langfristigen (klassisches Frühwarnsignal)."
-    elif v_curve <= 0.50:
-        r_curve = 45
-        st_curve, col_curve = "Flach / Übergang", "amber"
-        fazit_curve = "Flache bzw. frisch wieder positive Zinskurve – historisch folgt eine Abkühlung oft nach der Rückkehr über 0 %."
-    else:
-        r_curve = 15
-        st_curve, col_curve = "Normal (> +0,50 %)", "green"
-        fazit_curve = "Normale Zinsstruktur: Langfristige Anleihen bringen wieder deutlich mehr Zinsen als kurzfristige."
-
-    indikatoren.append({
-        "id": "T10Y2Y",
-        "titel": "2. US-Zinskurve (T10Y2Y)",
-        "untertitel": "Differenz zwischen 10-jährigen und 2-jährigen US-Staatsanleihen",
-        "wert": v_curve,
-        "delta": v_curve - v_curve_prev,
-        "einheit": "%",
-        "stand": f"{s_curve.index[-1].strftime('%d.%m.%Y')} ({src_curve})",
-        "risiko": r_curve,
-        "gewicht": 0.20,
-        "status": st_curve,
-        "farbe": col_curve,
-        "fazit": fazit_curve,
-        "erklaerung": (
-            "Normalerweise erhalten Anleger für 10-jährige Staatsanleihen höhere Zinsen als für 2-jährige. "
-            "Rutscht die Differenz **unter 0 % (inverse Zinskurve)**, erwarten die Anleihemärkte sinkende "
-            "Zinsen wegen einer kommenden Wirtschaftsschwäche. Auch das schnelle Wiederansteigen über 0 % "
-            "markiert oft den Beginn der eigentlichen Rezession."
-        ),
-        "schwellenwerte": (
-            "- **Über +0,50 % (Grün):** Gesunde, positiv geneigte Zinskurve.\n"
-            "- **0,00 % bis +0,50 % (Gelb):** Flache Zinskurve / sensible Übergangsphase.\n"
-            "- **Unter 0,00 % (Rot):** Inverse Zinskurve – Kredite werden für Banken unattraktiver."
-        ),
-        "verlauf": s_curve[s_curve.index >= start_5y],
-        "linien": [
-            {"y": 0.0, "color": "#FF5252", "text": "Nulllinie / Inversion (0,0 %)"},
-            {"y": 0.5, "color": "#00C853", "text": "Normalbereich (+0,5 %)"},
-        ],
-    })
-
-    # 3. Kredit-Stress (BAMLH0A0HYM2)
-    v_hy = float(s_hy.iloc[-1])
-    v_hy_prev = float(s_hy.iloc[-22]) if len(s_hy) >= 22 else float(s_hy.iloc[-2])
-    if v_hy > 5.0:
-        r_hy = int(np.clip(75 + (v_hy - 5.0) * 10, 75, 100))
-        st_hy, col_hy = "Hoher Kredit-Stress", "red"
-        fazit_hy = "Deutliche Risikoaufschläge bei Unternehmensanleihen – Investoren fürchten Zahlungsausfälle."
-    elif v_hy >= 3.5:
-        r_hy = int(40 + ((v_hy - 3.5) / 1.5) * 30)
-        st_hy, col_hy = "Leicht erhöht", "amber"
-        fazit_hy = "Die Risikoaufschläge ziehen an, bleiben aber noch unterhalb einer echten Kreditklemme."
-    else:
-        r_hy = int(np.clip((v_hy / 3.5) * 25, 10, 25))
-        st_hy, col_hy = "Entspannt", "green"
-        fazit_hy = "Niedrige Risikoaufschläge: Unternehmen können sich problemlos am Kapitalmarkt refinanzieren."
-
-    indikatoren.append({
-        "id": "BAMLH0A0HYM2",
-        "titel": "3. Kredit-Stress (BAMLH0A0HYM2)",
-        "untertitel": "Risikoaufschlag für Unternehmensanleihen (High Yield Spread)",
-        "wert": v_hy,
-        "delta": v_hy - v_hy_prev,
-        "einheit": "%",
-        "stand": f"{s_hy.index[-1].strftime('%d.%m.%Y')} ({src_hy})",
-        "risiko": r_hy,
-        "gewicht": 0.20,
-        "status": st_hy,
-        "farbe": col_hy,
-        "fazit": fazit_hy,
-        "erklaerung": (
-            "Dieser Wert zeigt, wie viel **mehr Zinsen** schwächere US-Unternehmen (High Yield / Hochzinsanleihen) "
-            "im Vergleich zu sicheren US-Staatsanleihen zahlen müssen. Steigt dieser Aufschlag sprunghaft an, "
-            "trocknet die Kreditversorgung der Wirtschaft aus."
-        ),
-        "schwellenwerte": (
-            "- **Unter 3,50 % (Grün):** Sehr ruhiges Kreditumfeld, hohe Risikobereitschaft.\n"
-            "- **3,50 % bis 5,00 % (Gelb):** Wachsende Vorsicht bei schwächeren Bilanzen.\n"
-            "- **Über 5,00 % (Rot):** Akuter Stress an den Kreditmärkten und erhöhte Ausfallgefahr."
-        ),
-        "verlauf": s_hy[s_hy.index >= start_5y],
-        "linien": [
-            {"y": 5.0, "color": "#FF5252", "text": "Stress-Schwelle (5,0 %)"},
-            {"y": 3.5, "color": "#FFB300", "text": "Vorsicht (3,5 %)"},
-        ],
-    })
-
-    # 4. US-Verbraucherstimmung (UMCSENT)
-    v_sent = float(s_sent.iloc[-1])
-    v_sent_prev = float(s_sent.iloc[-2]) if len(s_sent) >= 2 else v_sent
-    if v_sent < 60.0:
-        r_sent = int(np.clip(75 + (60.0 - v_sent) * 1.5, 75, 95))
-        st_sent, col_sent = "Pessimistisch (< 60)", "red"
-        fazit_sent = "Die US-Verbraucher sind stark verunsichert – ein Warnsignal, da Konsum ~70 % der US-Wirtschaft ausmacht."
-    elif v_sent <= 75.0:
-        r_sent = int(40 + ((75.0 - v_sent) / 15.0) * 25)
-        st_sent, col_sent = "Verhalten", "amber"
-        fazit_sent = "Das Konsumklima liegt unter dem langjährigen Durchschnitt; Haushalte achten stärker auf Preise."
-    else:
-        r_sent = 15
-        st_sent, col_sent = "Zuversichtlich", "green"
-        fazit_sent = "Gute Konsumlaune in den USA stützt Unternehmensgewinne und Konjunktur."
-
-    indikatoren.append({
-        "id": "UMCSENT",
-        "titel": "4. US-Verbraucherstimmung (UMCSENT)",
-        "untertitel": "Konsumklima der Universität Michigan",
-        "wert": v_sent,
-        "delta": v_sent - v_sent_prev,
-        "einheit": "Pkt.",
-        "stand": f"{s_sent.index[-1].strftime('%d.%m.%Y')} ({src_sent})",
-        "risiko": r_sent,
-        "gewicht": 0.15,
-        "status": st_sent,
-        "farbe": col_sent,
-        "fazit": fazit_sent,
-        "erklaerung": (
-            "Die monatliche Umfrage der **Universität Michigan** misst, wie US-Haushalte ihre eigene Finanzlage "
-            "und die Wirtschaftsaussichten einschätzen. Da rund 70 % der US-Wirtschaftsleistung am privaten Konsum "
-            "hängen, schlägt schwache Stimmung schnell auf die Unternehmensgewinne durch."
-        ),
-        "schwellenwerte": (
-            "- **Über 75 Pkt. (Grün):** Optimistische Verbraucher, solide Konsumnachfrage.\n"
-            "- **60 bis 75 Pkt. (Gelb):** Gedämpfte Stimmung, Zurückhaltung bei großen Anschaffungen.\n"
-            "- **Unter 60 Pkt. (Rot):** Historisches Rezessionsniveau beim Konsumklima."
-        ),
-        "verlauf": s_sent[s_sent.index >= start_5y],
-        "linien": [
-            {"y": 75.0, "color": "#00C853", "text": "Solide (75 Pkt.)"},
-            {"y": 60.0, "color": "#FF5252", "text": "Rezessionszone (60 Pkt.)"},
-        ],
-    })
-
-    # 5. US-Inflation (CPIAUCSL – Jahresrate)
-    v_cpi = float(s_cpi_yoy.iloc[-1])
-    v_cpi_prev = float(s_cpi_yoy.iloc[-2]) if len(s_cpi_yoy) >= 2 else v_cpi
-    if v_cpi > 4.0 or v_cpi < 0.5:
-        r_cpi = 80
-        st_cpi, col_cpi = "Kritisch", "red"
-        fazit_cpi = (
-            "Hohe Inflation frisst Kaufkraft und zwingt die Notenbank zu hohen Zinsen."
-            if v_cpi > 4.0
-            else "Extrem niedrige Inflation deutet auf gefährliche Nachfrageschwäche hin."
-        )
-    elif v_cpi > 2.8 or v_cpi < 1.5:
-        r_cpi = 48
-        st_cpi, col_cpi = "Über Zielwert", "amber"
-        fazit_cpi = "Die Inflation liegt noch spürbar über dem 2-%-Ziel der US-Notenbank."
-    else:
-        r_cpi = 15
-        st_cpi, col_cpi = "Im Zielkorridor", "green"
-        fazit_cpi = "Preisstabilität nahe dem 2-%-Ziel gibt der US-Notenbank vollen Handlungsspielraum."
-
-    indikatoren.append({
-        "id": "CPIAUCSL",
-        "titel": "5. US-Inflation (CPIAUCSL)",
-        "untertitel": "Jahresrate der Verbraucherpreise (VPI)",
-        "wert": v_cpi,
-        "delta": v_cpi - v_cpi_prev,
-        "einheit": "%",
-        "stand": f"{s_cpi_yoy.index[-1].strftime('%d.%m.%Y')} ({src_cpi})",
-        "risiko": r_cpi,
-        "gewicht": 0.10,
-        "status": st_cpi,
-        "farbe": col_cpi,
-        "fazit": fazit_cpi,
-        "erklaerung": (
-            "Die **Jahresrate der US-Verbraucherpreise (CPI)** zeigt, um wie viel Prozent das Leben für "
-            "US-Konsumenten gegenüber dem Vorjahr teurer geworden ist. Zu hohe Inflation zwingt die Notenbank "
-            "auf die Zinsbremse; ein Absturz unter 0,5 % signalisiert dagegen Nachfrageschwäche."
-        ),
-        "schwellenwerte": (
-            "- **1,5 % bis 2,8 % (Grün):** Idealer Zielbereich der US-Notenbank.\n"
-            "- **2,8 % bis 4,0 % (Gelb):** Erhöhter Preisdruck, Zinssenkungen werden gebremst.\n"
-            "- **Über 4,0 % oder unter 0,5 % (Rot):** Kaufkraftverlust / Zinsstress bzw. Deflationsrisiko."
-        ),
-        "verlauf": s_cpi_yoy[s_cpi_yoy.index >= start_5y],
-        "linien": [
-            {"y": 4.0, "color": "#FF5252", "text": "Hoch-Inflation (4,0 %)"},
-            {"y": 2.0, "color": "#00C853", "text": "Fed-Zielwert (2,0 %)"},
-        ],
-    })
-
-    # 6. US-Leitzins (FEDFUNDS)
-    v_fed = float(s_fed.iloc[-1])
-    v_fed_prev = float(s_fed.iloc[-2]) if len(s_fed) >= 2 else v_fed
-    if v_fed > 4.25:
-        r_fed = int(np.clip(70 + (v_fed - 4.25) * 12, 70, 90))
-        st_fed, col_fed = "Stark restriktiv", "red"
-        fazit_fed = "Hohes Zinsniveau verteuert Kredite, Hypotheken und Unternehmensfinanzierungen erheblich."
-    elif v_fed >= 2.50:
-        r_fed = 45
-        st_fed, col_fed = "Moderat bremsend", "amber"
-        fazit_fed = "Das Zinsniveau wirkt leicht bremsend auf Kreditvergabe und Immobilienmarkt."
-    else:
-        r_fed = 15
-        st_fed, col_fed = "Locker / Neutral", "green"
-        fazit_fed = "Niedrige Leitzinsen unterstützen Investitionen und Aktienbewertungen."
-
-    indikatoren.append({
-        "id": "FEDFUNDS",
-        "titel": "6. US-Leitzins (FEDFUNDS)",
-        "untertitel": "Aktueller Leitzins der US-Notenbank (Fed)",
-        "wert": v_fed,
-        "delta": v_fed - v_fed_prev,
-        "einheit": "%",
-        "stand": f"{s_fed.index[-1].strftime('%d.%m.%Y')} ({src_fed})",
-        "risiko": r_fed,
-        "gewicht": 0.10,
-        "status": st_fed,
-        "farbe": col_fed,
-        "fazit": fazit_fed,
-        "erklaerung": (
-            "Die **Federal Funds Rate** ist der wichtigste Leitzins der Welt. Hohe Leitzinsen wirken wie ein "
-            "Bremsklotz für Kredite, Immobilien und Unternehmensinvestitionen – allerdings oft mit einer "
-            "Zeitverzögerung von 6 bis 18 Monaten."
-        ),
-        "schwellenwerte": (
-            "- **Unter 2,50 % (Grün):** Günstiges Finanzierungsumfeld für Wirtschaft und Börse.\n"
-            "- **2,50 % bis 4,25 % (Gelb):** Spürbare Zinsbelastung für verschuldete Unternehmen.\n"
-            "- **Über 4,25 % (Rot):** Stark restriktive Geldpolitik mit erhöhtem Abkühlungsrisiko."
-        ),
-        "verlauf": s_fed[s_fed.index >= start_5y],
-        "linien": [
-            {"y": 4.25, "color": "#FF5252", "text": "Restriktiv (4,25 %)"},
-            {"y": 2.50, "color": "#FFB300", "text": "Neutralbereich (2,50 %)"},
-        ],
-    })
-
-    gesamt_score = int(round(sum(ind["risiko"] * ind["gewicht"] for ind in indikatoren)))
-    gesamt_score = int(np.clip(gesamt_score, 0, 100))
-
-    if gesamt_score < 30:
-        gesamtlage = "Expansion"
-        lage_farbe = "green"
-        strategie = (
-            "<b>Portfolio-Strategie (Offensive Trend-Phase):</b><br>"
-            "• <b>Aktien & ETFs:</b> Das Makro-Umfeld gibt grünes Licht. Trend-Follower-Aktien über SMA 50/200 und reguläre ETF-Sparpläne können voll laufen.<br>"
-            "• <b>Risikomanagement:</b> Gewinne nicht zu früh abschneiden, sondern über nachgezogene ATR-Stop-Loss-Marken absichern."
-        )
-    elif gesamt_score < 55:
-        gesamtlage = "Spätzyklus / Schleichende Abkühlung"
-        lage_farbe = "amber"
-        strategie = (
-            "<b>Portfolio-Strategie (Selektive Qualitäts-Phase):</b><br>"
-            "• <b>Aktien & ETFs:</b> Fokus auf bilanzstarke Qualitätswerte und breite Welt-ETFs legen; hochverschuldete Zykliker reduzieren.<br>"
-            "• <b>Risikomanagement:</b> Neue Käufe nur noch bei bestätigtem Volumen und CRV ≥ 2,0 tätigen und eine erste <b>Cash-Reserve (10–15 %)</b> aufbauen."
-        )
-    elif gesamt_score < 75:
-        gesamtlage = "Erhöhte Rezessionsgefahr"
-        lage_farbe = "orange"
-        strategie = (
-            "<b>Portfolio-Strategie (Defensive Schutz-Phase):</b><br>"
-            "• <b>Aktien & ETFs:</b> Überhitzte Positionen (RSI > 70) teilweise sichern und Stop-Loss-Marken konsequent beachten.<br>"
-            "• <b>Cash-Strategie:</b> <b>20–30 % Cash-Quote</b> vorhalten, um bei stärkeren Marktrücksetzern gezielt antizyklische TFA-Turnaround-Chancen einzusammeln."
-        )
-    else:
-        gesamtlage = "Akuter Rezessionsalarm"
-        lage_farbe = "red"
-        strategie = (
-            "<b>Portfolio-Strategie (Kapitalerhalt & Antizyklische Vorbereitung):</b><br>"
-            "• <b>Kapitalerhalt:</b> Stop-Loss-Regeln strikt durchziehen und keine spekulativen Ausbrüche mehr jagen.<br>"
-            "• <b>Chancen nutzen:</b> Langfristige ETF-Sparpläne diszipliniert weiterlaufen lassen (günstige Einstiegskurse) und Cash-Reserven erst bei extremer Marktpanik (Sentiment < 25) gestaffelt investieren."
-        )
-
-    return {
-        "score": gesamt_score,
-        "gesamtlage": gesamtlage,
-        "lage_farbe": lage_farbe,
-        "strategie": strategie,
-        "indikatoren": indikatoren,
-    }
-
-
-# ==============================================================================
-# BACKTESTING-ENGINE (HISTORISCHE STRATEGIE-SIMULATION IN €)
-# ==============================================================================
-@st.cache_data(ttl=900, show_spinner=False)
-def fuehre_backtest_aus(
-    ticker: str,
-    zeitraum: str,
-    strategie_name: str,
-    startkapital_eur: float,
-    nutze_stop_loss: bool = True,
-) -> dict | None:
-    """Simuliert eine Handelsstrategie auf historischen Euro-Kursen inkl. Buy & Hold Vergleich."""
-    df = lade_kursdaten_eur(ticker, zeitraum=zeitraum)
-    if df.empty or len(df) < 60:
-        return None
-
-    df = df.dropna(subset=["Close", "SMA_50", "RSI_14"]).copy()
-    if len(df) < 30:
-        return None
-
-    kapital = float(startkapital_eur)
-    aktien_anzahl = 0.0
-    einstieg_preis = 0.0
-    einstieg_datum = None
-    stop_preis = 0.0
-
-    trades = []
-    equity_verlauf = []
-    kauf_punkte = []
-    verkauf_punkte = []
-
-    for i in range(1, len(df)):
-        datum = df.index[i]
-        preis = float(df["Close"].iloc[i])
-        sma50 = float(df["SMA_50"].iloc[i])
-        sma200 = float(df["SMA_200"].iloc[i]) if not pd.isna(df["SMA_200"].iloc[i]) else sma50
-        sma50_prev = float(df["SMA_50"].iloc[i - 1])
-        sma200_prev = float(df["SMA_200"].iloc[i - 1]) if not pd.isna(df["SMA_200"].iloc[i - 1]) else sma50_prev
-        rsi = float(df["RSI_14"].iloc[i])
-        atr = float(df["ATR_14"].iloc[i]) if not pd.isna(df["ATR_14"].iloc[i]) else preis * 0.03
-
-        kauf_signal = False
-        verkauf_signal = False
-
-        if strategie_name == "Trend-Follower (SMA 50/200 + RSI)":
-            kauf_signal = (preis > sma50) and (sma50 > sma200) and (45 <= rsi <= 72)
-            verkauf_signal = (preis < sma50) or (rsi > 80)
-        elif strategie_name == "Golden Cross (SMA 50 kreuzt SMA 200)":
-            kauf_signal = (sma50_prev <= sma200_prev) and (sma50 > sma200)
-            verkauf_signal = (sma50_prev >= sma200_prev) and (sma50 < sma200)
+        if kauf_trigger:
+            in_position = True
+            einstiegspreis = c
+            kauf_flags.append(True)
+            verkauf_flags.append(False)
+            ereignisse.append({
+                "Datum": idx.strftime("%d.%m.%Y"),
+                "Signal": "🟢 KAUF" + (" (★ Golden Cross)" if gc else ""),
+                "Kurs (€)": round(c, 2),
+                "SMA 50 (€)": round(s50, 2),
+                "SMA 200 (€)": round(s200, 2),
+                "RSI (14)": round(r, 1),
+                "Auslöser": grund,
+                "Ergebnis seit Kauf": "Offene Position",
+            })
+        elif verkauf_trigger:
+            in_position = False
+            diff_pct = ((c - einstiegspreis) / einstiegspreis * 100) if einstiegspreis > 0 else 0.0
+            kauf_flags.append(False)
+            verkauf_flags.append(True)
+            ereignisse.append({
+                "Datum": idx.strftime("%d.%m.%Y"),
+                "Signal": "🔴 VERKAUF",
+                "Kurs (€)": round(c, 2),
+                "SMA 50 (€)": round(s50, 2),
+                "SMA 200 (€)": round(s200, 2),
+                "RSI (14)": round(r, 1),
+                "Auslöser": grund,
+                "Ergebnis seit Kauf": f"{diff_pct:+.2f} %",
+            })
         else:
-            roll_max = float(df["High"].iloc[max(0, i - 120) : i + 1].max())
-            drawdown_pct = ((preis - roll_max) / roll_max) * 100
-            kauf_signal = (drawdown_pct <= -25.0 and rsi < 38) or (rsi < 30)
-            verkauf_signal = (rsi > 72) or (aktien_anzahl > 0 and preis >= einstieg_preis * 1.25)
-
-        if aktien_anzahl > 0:
-            stop_ausgeloest = nutze_stop_loss and (preis <= stop_preis)
-            if stop_ausgeloest or verkauf_signal:
-                erloes = aktien_anzahl * preis
-                gewinn_eur = erloes - (aktien_anzahl * einstieg_preis)
-                gewinn_pct = ((preis - einstieg_preis) / einstieg_preis) * 100
-                grund = "Stop-Loss (ATR)" if stop_ausgeloest else "Strategie-Verkauf"
-                trades.append({
-                    "Kaufdatum": einstieg_datum.strftime("%d.%m.%Y"),
-                    "Verkaufsdatum": datum.strftime("%d.%m.%Y"),
-                    "Kaufkurs (€)": round(einstieg_preis, 2),
-                    "Verkaufskurs (€)": round(preis, 2),
-                    "Gewinn/Verlust (€)": round(gewinn_eur, 2),
-                    "Rendite (%)": round(gewinn_pct, 2),
-                    "Ausstiegsgrund": grund,
+            kauf_flags.append(False)
+            verkauf_flags.append(False)
+            if gc:
+                ereignisse.append({
+                    "Datum": idx.strftime("%d.%m.%Y"),
+                    "Signal": "⭐ GOLDEN CROSS",
+                    "Kurs (€)": round(c, 2),
+                    "SMA 50 (€)": round(s50, 2),
+                    "SMA 200 (€)": round(s200, 2),
+                    "RSI (14)": round(r, 1),
+                    "Auslöser": "SMA 50 kreuzt SMA 200 nach oben (bereits investiert)",
+                    "Ergebnis seit Kauf": "Trend-Bestätigung",
                 })
-                verkauf_punkte.append((datum, preis))
-                kapital = erloes
-                aktien_anzahl = 0.0
-                einstieg_preis = 0.0
-                einstieg_datum = None
 
-        elif kauf_signal and kapital > 0:
-            aktien_anzahl = kapital / preis
-            einstieg_preis = preis
-            einstieg_datum = datum
-            stop_preis = preis - 2.0 * atr
-            kapital = 0.0
-            kauf_punkte.append((datum, preis))
-
-        if aktien_anzahl > 0 and nutze_stop_loss:
-            stop_preis = max(stop_preis, preis - 2.2 * atr)
-
-        aktueller_depotwert = kapital + (aktien_anzahl * preis)
-        equity_verlauf.append({"Datum": datum, "Strategie (€)": aktueller_depotwert})
-
-    df_eq = pd.DataFrame(equity_verlauf).set_index("Datum")
-    start_preis = float(df["Close"].iloc[1])
-    df_eq["Buy & Hold (€)"] = startkapital_eur * (df["Close"].iloc[1:] / start_preis)
-
-    endkapital = float(df_eq["Strategie (€)"].iloc[-1])
-    endkapital_bh = float(df_eq["Buy & Hold (€)"].iloc[-1])
-    rendite_strat = ((endkapital - startkapital_eur) / startkapital_eur) * 100
-    rendite_bh = ((endkapital_bh - startkapital_eur) / startkapital_eur) * 100
-
-    roll_peak = df_eq["Strategie (€)"].cummax()
-    max_dd = float((((df_eq["Strategie (€)"] - roll_peak) / roll_peak) * 100).min())
-
-    gewinn_trades = [t for t in trades if t["Gewinn/Verlust (€)"] > 0]
-    win_rate = (len(gewinn_trades) / len(trades) * 100) if trades else 0.0
-
-    return {
-        "df": df.iloc[1:],
-        "df_eq": df_eq,
-        "endkapital": endkapital,
-        "endkapital_bh": endkapital_bh,
-        "rendite_strat": rendite_strat,
-        "rendite_bh": rendite_bh,
-        "max_dd": max_dd,
-        "anzahl_trades": len(trades),
-        "win_rate": win_rate,
-        "offene_position": aktien_anzahl > 0,
-        "trades": trades,
-        "kauf_punkte": kauf_punkte,
-        "verkauf_punkte": verkauf_punkte,
-    }
-
-
-# ==============================================================================
-# LIVE FINANZ-NEWSFEED (YFINANCE + DEUTSCHER RSS-TICKER)
-# ==============================================================================
-@st.cache_data(ttl=900, show_spinner=False)
-def hole_aktien_news(ticker: str) -> list[dict]:
-    """Lädt aktuelle Nachrichten für einen Ticker über yfinance (unterstützt alle yfinance-Versionen)."""
-    nachrichten = []
-    try:
-        t = yf.Ticker(ticker)
-        raw_news = t.news or []
-        for item in raw_news[:12]:
-            content = item.get("content", item)
-            titel = content.get("title") or item.get("title")
-            if not titel:
-                continue
-
-            provider = content.get("provider", {})
-            quelle = (
-                provider.get("displayName")
-                if isinstance(provider, dict)
-                else item.get("publisher", "Yahoo Finance")
-            ) or "Finanz-Ticker"
-
-            link = None
-            for url_key in ["canonicalUrl", "clickThroughUrl"]:
-                u_obj = content.get(url_key)
-                if isinstance(u_obj, dict) and u_obj.get("url"):
-                    link = u_obj["url"]
-                    break
-            if not link:
-                link = item.get("link") or f"https://finance.yahoo.com/quote/{ticker}"
-
-            zusammenfassung = content.get("summary") or content.get("description") or ""
-            pub_date = content.get("pubDate")
-            if not pub_date and item.get("providerPublishTime"):
-                pub_date = datetime.fromtimestamp(item["providerPublishTime"]).strftime("%d.%m.%Y %H:%M")
-            elif pub_date:
-                pub_date = str(pub_date)[:16].replace("T", " ")
-            else:
-                pub_date = "Aktuell"
-
-            nachrichten.append({
-                "titel": titel,
-                "quelle": quelle,
-                "datum": pub_date,
-                "zusammenfassung": zusammenfassung[:260] + ("..." if len(zusammenfassung) > 260 else ""),
-                "link": link,
-            })
-    except Exception:
-        pass
-    return nachrichten
-
-
-@st.cache_data(ttl=900, show_spinner=False)
-def hole_deutsche_markt_news(suchbegriff: str = "Börse DAX Aktien") -> list[dict]:
-    """Lädt aktuelle deutschsprachige Börsen-Schlagzeilen über Google News RSS."""
-    nachrichten = []
-    try:
-        q = urllib.parse.quote(suchbegriff)
-        url = f"https://news.google.com/rss/search?q={q}&hl=de&gl=DE&ceid=DE:de"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            xml_data = resp.read()
-        root = ET.fromstring(xml_data)
-        for item in root.findall(".//item")[:12]:
-            titel_raw = item.findtext("title") or ""
-            link = item.findtext("link") or ""
-            pub_date = item.findtext("pubDate") or ""
-            quelle = item.findtext("source") or "Börsen-News"
-            if " - " in titel_raw:
-                titel_clean = titel_raw.rsplit(" - ", 1)[0]
-            else:
-                titel_clean = titel_raw
-            nachrichten.append({
-                "titel": titel_clean,
-                "quelle": quelle,
-                "datum": pub_date[:22],
-                "zusammenfassung": "",
-                "link": link,
-            })
-    except Exception:
-        pass
-    return nachrichten
+    df_bt["Signal_Kauf"] = kauf_flags
+    df_bt["Signal_Verkauf"] = verkauf_flags
+    df_ereignisse = pd.DataFrame(ereignisse)
+    return df_bt, df_ereignisse
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -1181,51 +951,49 @@ def lade_krypto_daten() -> pd.DataFrame:
     return pd.DataFrame(zeilen)
 
 
-def lade_watchlist_datei() -> list:
-    """Lädt die Watchlist aus watchlist.json, falls im Repository vorhanden."""
-    if os.path.exists("watchlist.json"):
-        try:
-            with open("watchlist.json", "r", encoding="utf-8") as f:
-                daten = json.load(f)
-                if isinstance(daten, list) and len(daten) > 0:
-                    return daten
-        except Exception:
-            pass
-    return STANDARD_WATCHLIST
-
-
 # ==============================================================================
-# SESSION STATE INITIALISIERUNG
+# SESSION STATE & NAVIGATION-CALLBACKS
 # ==============================================================================
+BEREICHE = [
+    "1. Markt-Überblick & Stimmung",
+    "2. Trend- & Turnaround-Scanner",
+    "3. Einzelaktien-Analyse (€)",
+    "4. Strategie-Backtesting & Signale",
+    "5. Krypto-ETFs & Kapitalflüsse",
+]
+
 if "ausgewaehlter_ticker" not in st.session_state:
-    st.session_state["ausgewaehlter_ticker"] = "NVDA"
+    st.session_state["ausgewaehlter_ticker"] = "1810.HK"
 
-if "watchlist" not in st.session_state:
-    st.session_state["watchlist"] = lade_watchlist_datei()
+if "einzel_suchfeld" not in st.session_state:
+    st.session_state["einzel_suchfeld"] = "Xiaomi"
+
+if "nav_bereich" not in st.session_state:
+    st.session_state["nav_bereich"] = BEREICHE[0]
+
+
+def wechsele_zu_einzelanalyse(ticker: str, anzeige_name: str):
+    st.session_state["ausgewaehlter_ticker"] = ticker
+    st.session_state["einzel_suchfeld"] = anzeige_name
+    st.session_state["nav_bereich"] = "3. Einzelaktien-Analyse (€)"
+
+
+def wechsele_zu_backtesting(ticker: str):
+    st.session_state["ausgewaehlter_ticker"] = ticker
+    st.session_state["nav_bereich"] = "4. Strategie-Backtesting & Signale"
+
 
 # ==============================================================================
-# SEITENLEISTE (Navigation & Schnellhilfe)
+# SEITENLEISTE
 # ==============================================================================
 with st.sidebar:
     st.title("📈 Börsen-Cockpit (€)")
-    st.caption("Alle Kurse automatisch in Euro (€) • Verständliche Klartext-Signale")
+    st.caption("Alle Kurse automatisch in Euro (€) • Inkl. China & Japan")
 
-    bereich = st.radio(
-        "Bereich wählen:",
-        [
-            "1. Markt-Überblick & Stimmung",
-            "2. Trend- & Turnaround-Scanner",
-            "3. Einzelaktien-Analyse (€)",
-            "🧭 Rezessions-Barometer",
-            "⏪ Strategie-Backtesting (€)",
-            "4. Meine Watchlist & Depot (€)",
-            "5. Krypto-ETFs & Kapitalflüsse",
-            "📰 Live Finanz-Newsfeed",
-        ],
-    )
+    bereich = st.radio("Bereich wählen:", BEREICHE, key="nav_bereich")
 
     st.divider()
-    if st.button("🔄 Kurse & News jetzt aktualisieren"):
+    if st.button("🔄 Kurse jetzt aktualisieren"):
         st.cache_data.clear()
         st.rerun()
 
@@ -1233,10 +1001,10 @@ with st.sidebar:
         st.markdown(
             """
             * **SMA 50 / SMA 200:** Durchschnittskurs der letzten 50 bzw. 200 Handelstage. Liegt der Kurs darüber, ist der Trend positiv.
-            * **Einstiegszone:** Preisbereich rund um wichtige gleitende Durchschnitte und Unterstützungen für ein günstiges Chance-Risiko-Verhältnis.
-            * **TFA (Turnaround-Formel):** Stark gefallene Aktien (mind. 35 % unter Hoch), die gerade einen Boden bilden.
-            * **CRV (Chance-Risiko-Verhältnis):** Gewinnpotenzial bis zum Kursziel im Verhältnis zum Stop-Loss-Risiko (ab 2,0 : 1 attraktiv).
-            * **Rezessions-Barometer:** Bündelt 6 Indikatoren der US-Notenbank (FRED) zu einem Risiko-Score von 0 bis 100.
+            * **Golden Cross (★):** Die 50-Tage-Linie kreuzt die 200-Tage-Linie nach oben – ein starkes mittelfristiges Kaufsignal.
+            * **RSI (14):** Misst, ob eine Aktie überkauft (> 70) oder überverkauft (< 30) ist.
+            * **TFA (Turnaround-Formel):** Stark gefallene Aktien (mind. 35 % unter Jahreshoch), die einen Boden bilden.
+            * **CRV (Chance-Risiko-Verhältnis):** Gewinnpotenzial bis zum 52W-Hoch im Vergleich zum Stop-Loss-Risiko (ab 2,0 : 1 attraktiv).
             """
         )
 
@@ -1245,7 +1013,7 @@ with st.sidebar:
 # ==============================================================================
 if bereich == "1. Markt-Überblick & Stimmung":
     st.header("🧭 Markt-Überblick & Stimmungs-Tachometer")
-    st.write("Wie ist die aktuelle Großwetterlage an den Börsen? Alle Werte werden live berechnet.")
+    st.write("Aktuelle Großwetterlage an den internationalen Börsen – live berechnet.")
 
     sentiment = berechne_markt_sentiment()
 
@@ -1281,25 +1049,29 @@ if bereich == "1. Markt-Überblick & Stimmung":
 
     with col_info:
         st.subheader("Aktuelle Einschätzung")
-        st.markdown(f"<div class='metric-card'><h4>{sentiment['label']}</h4><p>Angst-Barometer (VIX): <b>{sentiment['vix']}</b> (Unter 20 bedeutet ruhiges Fahrwasser)</p></div>", unsafe_allow_html=True)
+        st.markdown(
+            f"<div class='metric-card'><h4>{sentiment['label']}</h4>"
+            f"<p>Angst-Barometer (VIX): <b>{sentiment['vix']}</b> (Unter 20 bedeutet ruhiges Fahrwasser)</p></div>",
+            unsafe_allow_html=True,
+        )
         st.markdown(
             """
             <div class='info-box'>
-            <b>Was bedeutet das für deine Käufe?</b><br>
-            • Bei <b>Angst (unter 40)</b> lohnen sich Turnaround-Kandidaten (TFA-Scanner).<br>
-            • Bei <b>Optimismus (55–75)</b> laufen Trend-Follower am besten.<br>
-            • Bei <b>Extremer Gier (über 80)</b> keine Kurse jagen, sondern Stop-Loss-Marken prüfen.
+            <b>Was bedeutet das für deine Strategie?</b><br>
+            • Bei <b>Angst (unter 40)</b> lohnen sich antizyklische Turnaround-Kandidaten (TFA-Scanner).<br>
+            • Bei <b>Optimismus (55–75)</b> laufen Trend-Follower & Golden-Cross-Signale am zuverlässigsten.<br>
+            • Bei <b>Extremer Gier (über 80)</b> keine Kurse jagen, sondern Stop-Loss-Marken eng nachziehen.
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-    st.subheader("Schnell-Check der Leitindizes")
+    st.subheader("Schnell-Check der Welt-Leitindizes")
     indizes = [
-        ("DAX (Deutschland)", "^GDAXI"),
-        ("S&P 500 (USA)", "^GSPC"),
-        ("NASDAQ 100 (US-Tech)", "^NDX"),
-        ("EURO STOXX 50", "^STOXX50E"),
+        ("DAX 🇩🇪", "^GDAXI"),
+        ("S&P 500 🇺🇸", "^GSPC"),
+        ("Hang Seng (HK/CN) 🇨🇳", "^HSI"),
+        ("Nikkei 225 (Japan) 🇯🇵", "^N225"),
     ]
     idx_cols = st.columns(4)
     for col, (iname, iticker) in zip(idx_cols, indizes):
@@ -1313,43 +1085,47 @@ if bereich == "1. Markt-Überblick & Stimmung":
                 st.metric(iname, "Lädt...", "0.00 %")
 
 # ==============================================================================
-# BEREICH 2: TREND-FOLLOWER & TFA-SCANNER (TURNAROUND-FORMEL)
+# BEREICH 2: TREND-FOLLOWER & TFA-SCANNER (INKL. CHINA & JAPAN IN €)
 # ==============================================================================
 elif bereich == "2. Trend- & Turnaround-Scanner":
     st.header("🔍 Aktien-Scanner: Trend-Follower & Turnaround-Formel (TFA)")
+    st.caption("Alle Kurse aus Hongkong (HKD), Japan (JPY), USA (USD) und Europa werden live in Euro (€) umgerechnet.")
 
-    col_u, col_m = st.columns([1.5, 1.5])
+    col_u, col_m = st.columns([1.4, 1.6])
     with col_u:
-        universum_name = st.selectbox("Aktien-Liste auswählen:", list(INDEX_UNIVERSEN.keys()))
+        universum_name = st.selectbox("Markt / Aktien-Liste auswählen:", list(INDEX_UNIVERSEN.keys()))
     with col_m:
         scanner_modus = st.radio(
             "Strategie-Filter:",
             [
                 "Alle Aktien anzeigen",
-                "Nur Trend-Follower (Aufwärtstrend)",
+                "Nur Trend-Follower & Golden Cross",
                 "Nur TFA-Signale (Turnaround-Chancen)",
             ],
             horizontal=True,
         )
 
-    eigene_ticker = st.text_input(
-        "Optional: Eigene Kürzel ergänzen (mit Komma getrennt, z. B. RHM.DE, AMD, BY6.DE):",
+    eigene_eingabe = st.text_input(
+        "Optional: Weitere Aktien ergänzen (Name oder Kürzel mit Komma, z. B. Xiaomi, BYD, Toyota, RHM.DE):",
         value="",
     )
 
     ticker_liste = list(INDEX_UNIVERSEN[universum_name])
-    if eigene_ticker.strip():
-        zusatz = [t.strip().upper() for t in eigene_ticker.split(",") if t.strip()]
-        ticker_liste = list(dict.fromkeys(ticker_liste + zusatz))
+    if eigene_eingabe.strip():
+        for teil in eigene_eingabe.split(","):
+            if teil.strip():
+                gef_tkr, _ = suche_ticker_aus_name(teil.strip())
+                if gef_tkr not in ticker_liste:
+                    ticker_liste.append(gef_tkr)
 
     ergebnisse = []
-    with st.spinner("Analysiere Kurse in Euro (€) und berechne Signale..."):
+    with st.spinner("Lade Kurse, rechne HKD / JPY / USD in Euro (€) um und berechne Signale..."):
         for t in ticker_liste:
             res = analysiere_aktie(t)
             if res:
                 ergebnisse.append(res)
 
-    if scanner_modus == "Nur Trend-Follower (Aufwärtstrend)":
+    if scanner_modus == "Nur Trend-Follower & Golden Cross":
         gefiltert = [r for r in ergebnisse if r["ist_trend_follower"] or r["golden_cross"]]
     elif scanner_modus == "Nur TFA-Signale (Turnaround-Chancen)":
         gefiltert = [r for r in ergebnisse if r["ist_tfa"]]
@@ -1363,135 +1139,155 @@ elif bereich == "2. Trend- & Turnaround-Scanner":
         for r in gefiltert:
             tabellen_daten.append({
                 "Unternehmen": f"{r['name']} ({r['ticker']})",
+                "Markt": r["region"],
                 "Kurs (€)": round(r["kurs_eur"], 2),
                 "Heute (%)": round(r["tages_diff_pct"], 2),
-                "Einstiegszone (€)": f"{r['einstieg_von']:.2f} – {r['einstieg_bis']:.2f}",
-                "Kursziel (€)": round(r["kursziel_basis"], 2),
+                "RSI (14)": round(r["rsi"], 1),
+                "Abstand 52W-Hoch": f"{r['abstand_hoch_pct']:.1f} %",
                 "Stop-Loss (€)": round(r["stop_loss_eur"], 2),
                 "CRV": f"{r['crv']:.1f} : 1",
-                "RSI (14)": round(r["rsi"], 1),
-                "Bewertung": r["signal_text"],
+                "Gesamturteil": r["signal_text"],
+                "Begründung im Detail": r["kurz_begruendung"],
             })
 
         df_anzeige = pd.DataFrame(tabellen_daten)
         st.dataframe(df_anzeige, use_container_width=True, hide_index=True)
 
         st.divider()
-        st.subheader("🔎 Aktie direkt im Detail prüfen")
-        auswahl_map = {f"{r['name']} ({r['ticker']})": r["ticker"] for r in gefiltert}
-        gewaehltes_label = st.selectbox("Wähle einen Treffer aus der Tabelle:", list(auswahl_map.keys()))
-        if st.button("➡️ Zur Einzelaktien-Analyse öffnen"):
-            st.session_state["ausgewaehlter_ticker"] = auswahl_map[gewaehltes_label]
-            st.success(f"{gewaehltes_label} wurde vorgemerkt! Wähle jetzt links '3. Einzelaktien-Analyse (€)'.")
+        st.subheader("🔎 Treffer im Detail prüfen & direkt öffnen")
+        auswahl_map = {f"{r['name']} ({r['ticker']}) – {r['kurs_eur']:.2f} €": r for r in gefiltert}
+        gewaehltes_label = st.selectbox("Aktie auswählen:", list(auswahl_map.keys()))
+        sel = auswahl_map[gewaehltes_label]
+
+        st.markdown(
+            f"""
+            <div class='verdict-box'>
+                <b>{sel['name']} ({sel['ticker']}) • {sel['region']}</b> —
+                <span class='badge-{sel['signal_farbe']}'>{sel['signal_text']}</span><br><br>
+                {sel['gesamtfazit']}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        btn_c1, btn_c2, _ = st.columns([1.3, 1.3, 2])
+        with btn_c1:
+            st.button(
+                "➡️ Zur Einzelaktien-Analyse wechseln",
+                on_click=wechsele_zu_einzelanalyse,
+                args=(sel["ticker"], sel["name"]),
+                use_container_width=True,
+            )
+        with btn_c2:
+            st.button(
+                "📊 Im Backtesting-Chart öffnen",
+                on_click=wechsele_zu_backtesting,
+                args=(sel["ticker"],),
+                use_container_width=True,
+            )
 
 # ==============================================================================
-# BEREICH 3: EINZELAKTIEN-ANALYSE (EINSTIEGSZONEN, KURSZIELE & KENNZAHLEN IN €)
+# BEREICH 3: EINZELAKTIEN-ANALYSE (NAMENSSUCHE + AUSFÜHRLICHE EINSCHÄTZUNG IN €)
 # ==============================================================================
 elif bereich == "3. Einzelaktien-Analyse (€)":
-    st.header("🔬 Einzelaktien-Analyse (Alle Kurse & Kursziele in €)")
+    st.header("🔬 Einzelaktien-Analyse (Alle Kurse in €)")
 
-    col_in, col_btn = st.columns([2, 1])
+    col_in, col_quick, col_btn = st.columns([1.8, 1.5, 0.9])
     with col_in:
-        ticker_eingabe = st.text_input(
-            "Aktien-Kürzel eingeben (z. B. NVDA, SAP.DE, ADS.DE, TTWO, 1810.HK):",
-            value=st.session_state["ausgewaehlter_ticker"],
-        ).strip().upper()
+        such_text = st.text_input(
+            "Aktienname ausgeschrieben oder Kürzel eingeben (z. B. Xiaomi, BYD, Toyota, Nvidia, RHM.DE):",
+            key="einzel_suchfeld",
+        )
+    with col_quick:
+        schnell_wahl = st.selectbox(
+            "Oder aus Schnellauswahl wählen:",
+            ["— Eigene Suche oben nutzen —"] + list(SCHNELLAUSWAHL_AKTIEN.keys()),
+        )
     with col_btn:
         st.write("")
         st.write("")
-        if st.button("Aktie analysieren"):
-            st.session_state["ausgewaehlter_ticker"] = ticker_eingabe
+        suchen_geklickt = st.button("Aktie analysieren", use_container_width=True)
 
-    daten = analysiere_aktie(ticker_eingabe)
+    if schnell_wahl != "— Eigene Suche oben nutzen —" and not suchen_geklickt:
+        ziel_ticker = SCHNELLAUSWAHL_AKTIEN[schnell_wahl]
+        aufgeloester_name = schnell_wahl
+    else:
+        ziel_ticker, aufgeloester_name = suche_ticker_aus_name(such_text)
+
+    st.session_state["ausgewaehlter_ticker"] = ziel_ticker
+
+    with st.spinner(f"Analysiere {aufgeloester_name} ({ziel_ticker}) in Euro (€)..."):
+        daten = analysiere_aktie(ziel_ticker)
+
     if not daten:
-        st.error(f"Für '{ticker_eingabe}' konnten keine Kursdaten geladen werden. Bitte prüfe das Kürzel (z. B. '.DE' für deutsche Aktien).")
+        st.error(
+            f"Für '{such_text}' (aufgelöst als '{ziel_ticker}') konnten keine Kursdaten geladen werden. "
+            "Prüfe bitte die Schreibweise oder gib direkt das Börsenkürzel ein (z. B. 1810.HK für Xiaomi, 1211.HK für BYD)."
+        )
     else:
         st.subheader(f"{daten['name']} ({daten['ticker']})")
-        st.caption(f"Sektor: {daten['sektor']} • Branche: {daten['branche']} • Alle Beträge automatisch in Euro (€) umgerechnet")
+        st.caption(
+            f"{daten['region']} • Branche: {daten['sektor']} • "
+            f"Originalwährung {daten['waehrung_orig']} automatisch in Euro (€) umgerechnet"
+        )
 
         if daten["earnings_warnung"]:
-            st.markdown(f"<div class='warn-box'>⚠️ ACHTUNG: {daten['earnings_warnung']} Kurz vor Quartalszahlen sind starke Kurssprünge möglich.</div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div class='warn-box'>⚠️ ACHTUNG: {daten['earnings_warnung']} Kurz vor Quartalszahlen sind starke Kurssprünge möglich.</div>",
+                unsafe_allow_html=True,
+            )
         elif daten["earnings_datum"]:
             st.caption(f"📅 Nächster Quartalszahlen-Termin: {daten['earnings_datum']}")
 
         k1, k2, k3, k4, k5 = st.columns(5)
         k1.metric("Aktueller Kurs", f"{daten['kurs_eur']:.2f} €", f"{daten['tages_diff_pct']:+.2f} %")
-        k2.metric("Ideale Einstiegszone", f"{daten['einstieg_von']:.2f} – {daten['einstieg_bis']:.2f} €", "Kaufbereich")
-        k3.metric("Basis-Kursziel", f"{daten['kursziel_basis']:.2f} €", f"{daten['potenzial_basis_pct']:+.1f} % Potenzial")
-        k4.metric("ATR Stop-Loss", f"{daten['stop_loss_eur']:.2f} €", f"-{((daten['kurs_eur'] - daten['stop_loss_eur']) / daten['kurs_eur'] * 100):.1f} % Puffer")
-        k5.metric("Chance-Risiko (CRV)", f"{daten['crv']:.1f} : 1", "Attraktiv ≥ 2,0" if daten["crv"] >= 2.0 else "Gering")
+        k2.metric(
+            "RSI (14 Tage)",
+            f"{daten['rsi']:.1f}",
+            "Überkauft > 70" if daten["rsi"] > 70 else ("Überverkauft < 30" if daten["rsi"] < 30 else "Gesund"),
+        )
+        k3.metric("ATR Stop-Loss", f"{daten['stop_loss_eur']:.2f} €", f"-{daten['stop_puffer_pct']:.1f} % Puffer")
+        k4.metric("Chance-Risiko (CRV)", f"{daten['crv']:.1f} : 1", "Attraktiv ≥ 2,0" if daten["crv"] >= 2.0 else "Moderat / Eng")
+        k5.metric("52-Wochen-Hoch", f"{daten['hoch_52w_eur']:.2f} €", f"{daten['abstand_hoch_pct']:.1f} %")
 
-        col_ez, col_kz = st.columns(2)
-        with col_ez:
-            st.markdown(
-                f"""
-                <div class='metric-card'>
-                    <h4>🎯 Einstiegszonen & Timing (in €)</h4>
-                    <p><span class='badge-{daten["einstieg_farbe"]}'>{daten["einstieg_status"]}</span></p>
-                    <ul style='margin-top:10px;'>
-                        <li><b>1. Ideale Einstiegszone (Pullback):</b> <b>{daten['einstieg_von']:.2f} € – {daten['einstieg_bis']:.2f} €</b> (nahe EMA 20 / SMA 50)</li>
-                        <li><b>2. Antizyklische Nachkauf-Zone:</b> <b>{daten['nachkauf_von']:.2f} € – {daten['nachkauf_bis']:.2f} €</b> (starke Unterstützung / SMA 200)</li>
-                        <li><b>Stop-Loss (Risiko-Grenze):</b> <b>{daten['stop_loss_eur']:.2f} €</b> (2× ATR unter aktuellem Kurs)</li>
-                    </ul>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        with col_kz:
-            st.markdown(
-                f"""
-                <div class='metric-card'>
-                    <h4>🚀 Mögliche Kursziele & Potenzial (in €)</h4>
-                    <p style='color:#8B949E; font-size:0.88rem; margin-bottom:8px;'>Quelle: {daten['kursziel_quelle']} • Einstufung: <b>{daten['empfehlung_de']}</b></p>
-                    <ul>
-                        <li><b>Konservatives Kursziel:</b> <b>{daten['kursziel_tief']:.2f} €</b></li>
-                        <li><b>Basis-Kursziel (Durchschnitt):</b> <b>{daten['kursziel_basis']:.2f} €</b> (<b>{daten['potenzial_basis_pct']:+.1f} %</b>)</li>
-                        <li><b>Optimistisches Kursziel:</b> <b>{daten['kursziel_hoch']:.2f} €</b> (<b>{daten['potenzial_hoch_pct']:+.1f} %</b>)</li>
-                    </ul>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
+        # Ausführliches Gesamturteil & detaillierte Begründung
         st.markdown(
             f"""
             <div class='metric-card'>
                 <h4>Gesamturteil: <span class='badge-{daten["signal_farbe"]}'>{daten["signal_text"]}</span></h4>
-                <ul>
-                    <li><b>Trend-Check:</b> Der Kurs liegt {'<b>über</b>' if daten['kurs_eur'] > daten['sma50_eur'] else '<b>unter</b>'} der 50-Tage-Linie ({daten['sma50_eur']:.2f} €) und {'<b>über</b>' if daten['kurs_eur'] > daten['sma200_eur'] else '<b>unter</b>'} der 200-Tage-Linie ({daten['sma200_eur']:.2f} €).</li>
-                    <li><b>RSI & Schwung (MACD):</b> RSI (14) steht bei <b>{daten['rsi']:.1f}</b>. Handelsvolumen ist {'<b>überdurchschnittlich hoch (Signal bestätigt ✅)</b>' if daten['volumen_bestaetigt'] else 'unauffällig'}. Der MACD-Schwung ist <b>{daten['macd_trend'].lower()}</b>.</li>
+                <p style='font-size: 1.0rem; line-height: 1.6; margin-top: 10px;'>
+                    <b>Ausführliche Einschätzung & Handlungsempfehlung:</b><br>
+                    {daten['gesamtfazit']}
+                </p>
+                <hr style='border-color: #30363D; margin: 14px 0;'>
+                <ul style='line-height: 1.65;'>
+                    <li><b>1. Trend- & Linien-Check (SMA 50 / SMA 200):</b> {daten['trend_detail']}</li>
+                    <li><b>2. Schwung, RSI & Volumen:</b> {daten['momentum_detail']}</li>
+                    <li><b>3. 52-Wochen-Spanne & Risiko-Steuerung:</b> {daten['risiko_detail']}</li>
                 </ul>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        df_plot = daten["df"].tail(180)
+        st.button(
+            "📊 Kauf- & Verkaufssignale für diese Aktie im Backtesting-Chart ansehen",
+            on_click=wechsele_zu_backtesting,
+            args=(daten["ticker"],),
+        )
+
+        # Kurschart in Euro mit SMA 50, SMA 200 & Stop-Loss
+        df_plot = daten["df"].tail(200)
         fig = make_subplots(
             rows=2,
             cols=1,
             shared_xaxes=True,
             vertical_spacing=0.08,
-            row_heights=[0.74, 0.26],
+            row_heights=[0.72, 0.28],
             subplot_titles=(
-                "Kursverlauf (€) inkl. Einstiegszone (grünes Band), Kurszielen & Stop-Loss",
+                f"{daten['name']} – Kursverlauf in Euro (€) mit 50- & 200-Tage-Linie",
                 "RSI (14) – Überkauft (> 70) / Überverkauft (< 30)",
             ),
-        )
-
-        fig.add_hrect(
-            y0=daten["einstieg_von"],
-            y1=daten["einstieg_bis"],
-            fillcolor="rgba(0, 230, 118, 0.14)",
-            line_width=1,
-            line_dash="dot",
-            line_color="#00E676",
-            annotation_text=f"Einstiegszone: {daten['einstieg_von']:.2f} – {daten['einstieg_bis']:.2f} €",
-            annotation_position="bottom left",
-            annotation_font_color="#00E676",
-            row=1,
-            col=1,
         )
 
         fig.add_trace(
@@ -1500,31 +1296,12 @@ elif bereich == "3. Einzelaktien-Analyse (€)":
             col=1,
         )
         fig.add_trace(
-            go.Scatter(x=df_plot.index, y=df_plot["SMA_50"], name="SMA 50 (€)", line=dict(color="#FFB300", width=1.6)),
+            go.Scatter(x=df_plot.index, y=df_plot["SMA_50"], name="SMA 50 (€)", line=dict(color="#FFB300", width=1.8)),
             row=1,
             col=1,
         )
         fig.add_trace(
-            go.Scatter(x=df_plot.index, y=df_plot["SMA_200"], name="SMA 200 (€)", line=dict(color="#AB47BC", width=1.6)),
-            row=1,
-            col=1,
-        )
-
-        fig.add_hline(
-            y=daten["kursziel_basis"],
-            line_dash="dash",
-            line_color="#00E5FF",
-            annotation_text=f"Kursziel Basis: {daten['kursziel_basis']:.2f} € ({daten['potenzial_basis_pct']:+.1f}%)",
-            annotation_font_color="#00E5FF",
-            row=1,
-            col=1,
-        )
-        fig.add_hline(
-            y=daten["kursziel_hoch"],
-            line_dash="dot",
-            line_color="#00C853",
-            annotation_text=f"Kursziel Hoch: {daten['kursziel_hoch']:.2f} €",
-            annotation_font_color="#00C853",
+            go.Scatter(x=df_plot.index, y=df_plot["SMA_200"], name="SMA 200 (€)", line=dict(color="#CE93D8", width=1.8)),
             row=1,
             col=1,
         )
@@ -1532,8 +1309,7 @@ elif bereich == "3. Einzelaktien-Analyse (€)":
             y=daten["stop_loss_eur"],
             line_dash="dash",
             line_color="#FF5252",
-            annotation_text=f"Stop-Loss: {daten['stop_loss_eur']:.2f} €",
-            annotation_font_color="#FF5252",
+            annotation_text=f"ATR Stop-Loss: {daten['stop_loss_eur']:.2f} €",
             row=1,
             col=1,
         )
@@ -1550,7 +1326,8 @@ elif bereich == "3. Einzelaktien-Analyse (€)":
             paper_bgcolor="#0E1117",
             plot_bgcolor="#161B22",
             font=dict(color="#E6EDF3"),
-            height=620,
+            height=600,
+            hovermode="x unified",
             margin=dict(l=20, r=20, t=55, b=20),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         )
@@ -1558,361 +1335,231 @@ elif bereich == "3. Einzelaktien-Analyse (€)":
         fig.update_yaxes(gridcolor="#21262D")
         st.plotly_chart(fig, use_container_width=True)
 
-        st.subheader("📊 Wichtige Bewertungs- & Fundamental-Kennzahlen")
-        f1, f2, f3, f4 = st.columns(4)
-        f1.metric("KGV (Aktuell / Erwartet)", f"{daten['kgv_trailing']:.1f}" if daten["kgv_trailing"] else "k. A.", f"Forward: {daten['kgv_forward']:.1f}" if daten["kgv_forward"] else None)
-        f2.metric("Marktkapitalisierung", f"{daten['marktkap_eur_mrd']:.1f} Mrd. €" if daten["marktkap_eur_mrd"] else "k. A.")
-        f3.metric("KUV / KBV", f"{daten['kuv']:.2f}" if daten["kuv"] else "k. A.", f"KBV: {daten['kbv']:.2f}" if daten["kbv"] else None)
-        f4.metric("Dividendenrendite", f"{daten['dividende_pct']:.2f} %" if daten["dividende_pct"] else "0,00 %")
-
-        f5, f6, f7, f8 = st.columns(4)
-        f5.metric("Gewinnmarge", f"{daten['gewinnmarge_pct']:.1f} %" if daten["gewinnmarge_pct"] is not None else "k. A.")
-        f6.metric("Eigenkapitalrendite (ROE)", f"{daten['roe_pct']:.1f} %" if daten["roe_pct"] is not None else "k. A.")
-        f7.metric("Beta (Marktschwankung)", f"{daten['beta']:.2f}" if daten["beta"] is not None else "k. A.")
-        f8.metric("52-Wochen-Spanne (€)", f"{daten['tief_52w_eur']:.2f} – {daten['hoch_52w_eur']:.2f} €")
-
-        st.divider()
-        st.subheader(f"📰 Aktuelle Nachrichten zu {daten['name']}")
-        aktien_news = hole_aktien_news(daten["ticker"])
-        if not aktien_news:
-            aktien_news = hole_deutsche_markt_news(f"{daten['name']} Aktie")
-        if aktien_news:
-            for n in aktien_news[:5]:
-                st.markdown(
-                    f"""
-                    <div class='news-card'>
-                        <div style='font-size:0.82rem; color:#8B949E;'>{n['quelle']} • {n['datum']}</div>
-                        <div style='font-size:1.0rem; font-weight:600; margin:4px 0;'><a href="{n['link']}" target="_blank" style="color:#58A6FF; text-decoration:none;">{n['titel']} ↗</a></div>
-                        <div style='font-size:0.9rem; color:#C9D1D9;'>{n['zusammenfassung']}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-        else:
-            st.info("Für diesen Wert liegen aktuell keine neuen Schlagzeilen vor.")
-
 # ==============================================================================
-# REZESSIONS-BAROMETER (LIVE US-NOTENBANK FRED-DATEN OHNE API-KEY)
+# BEREICH 4: BACKTESTING & SIGNAL-CHART (OHNE KAPITALENTWICKLUNG, MIT GOLDEN CROSS)
 # ==============================================================================
-elif bereich == "🧭 Rezessions-Barometer":
-    st.header("🧭 US-Makro & Rezessions-Barometer (FRED Live-Daten)")
-    st.write("Automatische Berechnung des aktuellen Rezessionsrisikos aus den Daten der US-Notenbank (St. Louis Fed / FRED – ohne zusätzlichen API-Key).")
+elif bereich == "4. Strategie-Backtesting & Signale":
+    st.header("📊 Signal-Backtesting: Kauf-, Verkaufs- & Golden-Cross-Signale")
+    st.write("Übersichtliche Darstellung aller historischen Einstiegs-, Ausstiegs- und Golden-Cross-Punkte direkt im Euro-Chart.")
 
-    with st.spinner("Lade aktuelle Wirtschafts- & Zinsdaten der US-Notenbank (FRED)..."):
-        baro = berechne_rezessions_barometer()
-
-    col_g, col_s = st.columns([1.15, 1.15])
-    with col_g:
-        fig_rez = go.Figure(
-            go.Indicator(
-                mode="gauge+number",
-                value=baro["score"],
-                title={
-                    "text": "Rezessions-Risiko-Score (0 = Entspannt, 100 = Alarm)",
-                    "font": {"size": 17, "color": "#E6EDF3"},
-                },
-                number={"suffix": " Pkt.", "font": {"size": 40, "color": "#E6EDF3"}},
-                gauge={
-                    "axis": {"range": [0, 100], "tickcolor": "#E6EDF3"},
-                    "bar": {"color": "#58A6FF"},
-                    "bgcolor": "#161B22",
-                    "steps": [
-                        {"range": [0, 30], "color": "#2E7D32"},
-                        {"range": [30, 55], "color": "#F9A825"},
-                        {"range": [55, 75], "color": "#EF6C00"},
-                        {"range": [75, 100], "color": "#C62828"},
-                    ],
-                },
-            )
+    c_s1, c_s2, c_s3 = st.columns([1.4, 1.6, 1.0])
+    with c_s1:
+        bt_eingabe = st.text_input(
+            "Aktie (Name oder Kürzel, z. B. Xiaomi, BYD, NVDA):",
+            value=st.session_state["ausgewaehlter_ticker"],
         )
-        fig_rez.update_layout(
-            paper_bgcolor="#0E1117",
-            font={"color": "#E6EDF3"},
-            height=310,
-            margin=dict(l=20, r=20, t=50, b=20),
+        bt_ticker, bt_name_hint = suche_ticker_aus_name(bt_eingabe)
+        st.session_state["ausgewaehlter_ticker"] = bt_ticker
+    with c_s2:
+        bt_strategie = st.selectbox(
+            "Signal-Strategie wählen:",
+            [
+                "Kombi-Strategie: Golden Cross + Trend & RSI (Empfohlen)",
+                "Nur Golden Cross & Death Cross (SMA 50 / SMA 200)",
+                "Trend-Pullback & Ausbruch (SMA 50 + RSI)",
+            ],
         )
-        st.plotly_chart(fig_rez, use_container_width=True)
-
-    with col_s:
-        st.subheader("Aktuelle Gesamtlage & Portfolio-Strategie")
-        st.markdown(
-            f"""
-            <div class='metric-card'>
-                <h4>Gesamtlage: <span class='badge-{baro["lage_farbe"]}'>{baro["gesamtlage"]}</span> ({baro["score"]} / 100 Punkte)</h4>
-                <p style='margin-top: 8px; color: #8B949E; font-size: 0.9rem;'>
-                    Gewichteter Gesamtindex aus Arbeitsmarkt (Sahm-Regel), Zinskurve, Kredit-Spreads, Verbraucherstimmung, Inflation und Fed-Leitzins.
-                </p>
-            </div>
-            """,
-            unsafe_allow_html=True,
+    with c_s3:
+        bt_zeitraum_label = st.selectbox(
+            "Anzeige-Zeitraum:",
+            ["1 Jahr", "2 Jahre", "3 Jahre"],
+            index=1,
         )
-        st.markdown(f"<div class='info-box'>{baro['strategie']}</div>", unsafe_allow_html=True)
 
-    st.divider()
-    st.subheader("📊 6 Wirtschafts- & Zinsindikatoren mit Klartext-Erklärung")
+    tage_map = {"1 Jahr": 252, "2 Jahre": 504, "3 Jahre": 756}
+    anzeige_tage = tage_map[bt_zeitraum_label]
 
-    indikatoren = baro["indikatoren"]
-    for i in range(0, len(indikatoren), 2):
-        cols = st.columns(2)
-        for idx_col, ind in enumerate(indikatoren[i : i + 2]):
-            with cols[idx_col]:
-                st.markdown(
-                    f"""
-                    <div class='metric-card'>
-                        <div style='display:flex; justify-content:space-between; align-items:center;'>
-                            <h4 style='margin:0;'>{ind['titel']}</h4>
-                            <span class='badge-{ind["farbe"]}'>{ind['status']}</span>
-                        </div>
-                        <p style='color:#8B949E; font-size:0.88rem; margin:4px 0 10px 0;'>{ind['untertitel']} • Stand: {ind['stand']}</p>
-                        <div style='font-size:1.45rem; font-weight:700; margin-bottom:6px;'>
-                            {ind['wert']:.2f} {ind['einheit']}
-                            <span style='font-size:0.9rem; font-weight:400; color:#8B949E;'>({ind['delta']:+.2f} {ind['einheit']} zur Vorperiode)</span>
-                        </div>
-                        <p style='margin:0; font-size:0.93rem;'>{ind['fazit']}</p>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+    # 5 Jahre laden, damit SMA 200 bereits ab dem ersten sichtbaren Tag vollständig berechnet ist
+    df_lang = lade_kursdaten_eur(bt_ticker, zeitraum="5y")
+    stamm_bt = hole_stammdaten(bt_ticker)
 
-                with st.expander("📖 Erklärung, Schwellenwerte & Verlauf"):
-                    st.markdown(ind["erklaerung"])
-                    st.markdown("**Wichtige Schwellenwerte:**")
-                    st.markdown(ind["schwellenwerte"])
-
-                    s_hist = ind["verlauf"]
-                    if not s_hist.empty:
-                        fig_ind = go.Figure()
-                        fig_ind.add_trace(
-                            go.Scatter(
-                                x=s_hist.index,
-                                y=s_hist.values,
-                                mode="lines",
-                                name=ind["id"],
-                                line=dict(color="#58A6FF", width=2.2),
-                                fill="tozeroy",
-                                fillcolor="rgba(88, 166, 255, 0.10)",
-                            )
-                        )
-                        for linie in ind["linien"]:
-                            fig_ind.add_hline(
-                                y=linie["y"],
-                                line_dash="dash",
-                                line_color=linie["color"],
-                                annotation_text=linie["text"],
-                                annotation_font_color=linie["color"],
-                            )
-                        fig_ind.update_layout(
-                            title=f"Historischer Verlauf (5 Jahre) – {ind['id']}",
-                            paper_bgcolor="#0E1117",
-                            plot_bgcolor="#161B22",
-                            font=dict(color="#E6EDF3", size=12),
-                            height=260,
-                            margin=dict(l=15, r=15, t=40, b=15),
-                            showlegend=False,
-                        )
-                        fig_ind.update_xaxes(gridcolor="#21262D")
-                        fig_ind.update_yaxes(gridcolor="#21262D")
-                        st.plotly_chart(fig_ind, use_container_width=True)
-
-# ==============================================================================
-# STRATEGIE-BACKTESTING (€)
-# ==============================================================================
-elif bereich == "⏪ Strategie-Backtesting (€)":
-    st.header("⏪ Strategie-Backtesting (Historischer Rückblick in €)")
-    st.write("Teste auf echten historischen Kursdaten in Euro (€), wie sich deine Handelsregeln im Vergleich zu einfachem Kaufen & Liegenlassen (Buy & Hold) geschlagen hätten.")
-
-    b1, b2, b3, b4 = st.columns([1.2, 1.8, 1.0, 1.0])
-    bt_ticker = b1.text_input("Aktien-Kürzel:", value=st.session_state["ausgewaehlter_ticker"]).strip().upper()
-    bt_strategie = b2.selectbox(
-        "Strategie wählen:",
-        [
-            "Trend-Follower (SMA 50/200 + RSI)",
-            "Golden Cross (SMA 50 kreuzt SMA 200)",
-            "TFA Turnaround & RSI-Rebound",
-        ],
-    )
-    bt_zeitraum = b3.selectbox("Zeitraum:", ["1y", "2y", "3y", "5y"], index=2)
-    bt_kapital = b4.number_input("Startkapital (€):", min_value=500.0, value=10000.0, step=500.0)
-
-    bt_stoploss = st.checkbox("Dynamischen ATR-Stop-Loss zur Verlustbegrenzung aktivieren", value=True)
-
-    with st.spinner(f"Berechne Backtest für {bt_ticker} ({bt_zeitraum})..."):
-        bt_res = fuehre_backtest_aus(bt_ticker, bt_zeitraum, bt_strategie, bt_kapital, bt_stoploss)
-
-    if not bt_res:
-        st.error(f"Für '{bt_ticker}' konnten im Zeitraum '{bt_zeitraum}' nicht genügend historische Kursdaten geladen werden.")
+    if df_lang.empty or len(df_lang) < 60:
+        st.error(f"Für '{bt_eingabe}' ({bt_ticker}) konnten keine ausreichenden historischen Daten geladen werden.")
     else:
-        stamm_bt = hole_stammdaten(bt_ticker)
-        st.subheader(f"Backtest-Ergebnis: {stamm_bt['name']} ({bt_ticker})")
+        df_sichtbar = df_lang.tail(anzeige_tage).copy()
+        df_bt, df_ereignisse = berechne_backtest_signale(df_sichtbar, bt_strategie)
 
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("Endkapital Strategie", f"{bt_res['endkapital']:,.2f} €", f"{bt_res['rendite_strat']:+.1f} %")
-        m2.metric("Buy & Hold Vergleich", f"{bt_res['endkapital_bh']:,.2f} €", f"{bt_res['rendite_bh']:+.1f} %")
-        m3.metric("Abgeschlossene Trades", f"{bt_res['anzahl_trades']}", "Position aktuell offen" if bt_res["offene_position"] else "Aktuell in Cash")
-        m4.metric("Trefferquote (Win-Rate)", f"{bt_res['win_rate']:.1f} %")
-        m5.metric("Max. Rückgang (Drawdown)", f"{bt_res['max_dd']:.1f} %")
+        kauf_df = df_bt[df_bt["Signal_Kauf"]]
+        verkauf_df = df_bt[df_bt["Signal_Verkauf"]]
+        gc_df = df_bt[df_bt["Golden_Cross"]]
 
-        fig_eq = go.Figure()
-        fig_eq.add_trace(
-            go.Scatter(
-                x=bt_res["df_eq"].index,
-                y=bt_res["df_eq"]["Strategie (€)"],
-                name="Strategie-Depot (€)",
-                line=dict(color="#00E676", width=2.5),
-            )
-        )
-        fig_eq.add_trace(
-            go.Scatter(
-                x=bt_res["df_eq"].index,
-                y=bt_res["df_eq"]["Buy & Hold (€)"],
-                name="Buy & Hold (€)",
-                line=dict(color="#58A6FF", width=1.8, dash="dash"),
-            )
-        )
-        fig_eq.update_layout(
-            title="Kapitalentwicklung in Euro (€): Strategie vs. Buy & Hold",
-            paper_bgcolor="#0E1117",
-            plot_bgcolor="#161B22",
-            font=dict(color="#E6EDF3"),
-            height=380,
-            margin=dict(l=20, r=20, t=45, b=20),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        )
-        fig_eq.update_xaxes(gridcolor="#21262D")
-        fig_eq.update_yaxes(gridcolor="#21262D")
-        st.plotly_chart(fig_eq, use_container_width=True)
+        # Kompakte Signal-Kennzahlen (ohne Kapitalentwicklung)
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Aktueller Kurs (€)", f"{float(df_bt['Close'].iloc[-1]):.2f} €")
+        s2.metric("🟢 Kaufsignale", f"{len(kauf_df)} Signale")
+        s3.metric("🔴 Verkaufssignale", f"{len(verkauf_df)} Signale")
+        s4.metric("⭐ Golden Crosses", f"{len(gc_df)} Kreuzungen")
 
-        fig_sig = go.Figure()
-        fig_sig.add_trace(
+        # Hochauflösender, klar lesbarer Signal-Chart
+        fig_bt = go.Figure()
+
+        # 1. Kurslinie mit dezenter Flächenfüllung
+        fig_bt.add_trace(
             go.Scatter(
-                x=bt_res["df"].index,
-                y=bt_res["df"]["Close"],
+                x=df_bt.index,
+                y=df_bt["Close"],
                 name="Kurs (€)",
-                line=dict(color="#8B949E", width=1.8),
+                mode="lines",
+                line=dict(color="#58A6FF", width=2.6),
+                fill="tozeroy",
+                fillcolor="rgba(88, 166, 255, 0.06)",
+                hovertemplate="<b>Kurs:</b> %{y:.2f} €<extra></extra>",
             )
         )
-        if bt_res["kauf_punkte"]:
-            kx, ky = zip(*bt_res["kauf_punkte"])
-            fig_sig.add_trace(
+
+        # 2. Gleitende Durchschnitte SMA 50 & SMA 200
+        fig_bt.add_trace(
+            go.Scatter(
+                x=df_bt.index,
+                y=df_bt["SMA_50"],
+                name="SMA 50 (50-Tage-Linie)",
+                mode="lines",
+                line=dict(color="#FFB300", width=1.8),
+                hovertemplate="<b>SMA 50:</b> %{y:.2f} €<extra></extra>",
+            )
+        )
+        fig_bt.add_trace(
+            go.Scatter(
+                x=df_bt.index,
+                y=df_bt["SMA_200"],
+                name="SMA 200 (200-Tage-Linie)",
+                mode="lines",
+                line=dict(color="#CE93D8", width=2.0),
+                hovertemplate="<b>SMA 200:</b> %{y:.2f} €<extra></extra>",
+            )
+        )
+
+        # 3. Kaufsignale (grüne Dreiecke klar unterhalb der Tageskerze)
+        if not kauf_df.empty:
+            kauf_y = kauf_df["Low"] * 0.978
+            zeige_kauf_text = len(kauf_df) <= 10
+            fig_bt.add_trace(
                 go.Scatter(
-                    x=kx,
-                    y=ky,
-                    mode="markers",
-                    name="Kaufsignal",
-                    marker=dict(symbol="triangle-up", size=12, color="#00E676"),
+                    x=kauf_df.index,
+                    y=kauf_y,
+                    name="🟢 Kaufsignal (Einstieg)",
+                    mode="markers+text" if zeige_kauf_text else "markers",
+                    text=["KAUF"] * len(kauf_df) if zeige_kauf_text else None,
+                    textposition="bottom center",
+                    textfont=dict(color="#00E676", size=11, family="Arial Black"),
+                    marker=dict(
+                        symbol="triangle-up",
+                        size=16,
+                        color="#00E676",
+                        line=dict(color="#FFFFFF", width=1.5),
+                    ),
+                    customdata=kauf_df["Close"],
+                    hovertemplate="<b>🟢 KAUFSIGNAL</b><br>Kurs: %{customdata:.2f} €<extra></extra>",
                 )
             )
-        if bt_res["verkauf_punkte"]:
-            vx, vy = zip(*bt_res["verkauf_punkte"])
-            fig_sig.add_trace(
+
+        # 4. Verkaufssignale (rote Dreiecke klar oberhalb der Tageskerze)
+        if not verkauf_df.empty:
+            verkauf_y = verkauf_df["High"] * 1.022
+            zeige_verkauf_text = len(verkauf_df) <= 10
+            fig_bt.add_trace(
                 go.Scatter(
-                    x=vx,
-                    y=vy,
-                    mode="markers",
-                    name="Verkauf / Stop-Loss",
-                    marker=dict(symbol="triangle-down", size=12, color="#FF5252"),
+                    x=verkauf_df.index,
+                    y=verkauf_y,
+                    name="🔴 Verkaufssignal (Ausstieg)",
+                    mode="markers+text" if zeige_verkauf_text else "markers",
+                    text=["VERKAUF"] * len(verkauf_df) if zeige_verkauf_text else None,
+                    textposition="top center",
+                    textfont=dict(color="#FF5252", size=11, family="Arial Black"),
+                    marker=dict(
+                        symbol="triangle-down",
+                        size=16,
+                        color="#FF5252",
+                        line=dict(color="#FFFFFF", width=1.5),
+                    ),
+                    customdata=verkauf_df["Close"],
+                    hovertemplate="<b>🔴 VERKAUFSSIGNAL</b><br>Kurs: %{customdata:.2f} €<extra></extra>",
                 )
             )
-        fig_sig.update_layout(
-            title="Ein- und Ausstiegspunkte im Kursverlauf (€)",
+
+        # 5. Golden Cross Markierungen (Goldener Stern + vertikale Linie direkt am SMA-Schnittpunkt)
+        if not gc_df.empty:
+            fig_bt.add_trace(
+                go.Scatter(
+                    x=gc_df.index,
+                    y=gc_df["SMA_50"],
+                    name="⭐ Golden Cross (SMA 50 > SMA 200)",
+                    mode="markers+text",
+                    text=["★ Golden Cross"] * len(gc_df),
+                    textposition="top right",
+                    textfont=dict(color="#FFD700", size=12, family="Arial Black"),
+                    marker=dict(
+                        symbol="star",
+                        size=20,
+                        color="#FFD700",
+                        line=dict(color="#0E1117", width=1.5),
+                    ),
+                    customdata=gc_df["Close"],
+                    hovertemplate="<b>⭐ GOLDEN CROSS</b><br>SMA 50 kreuzt SMA 200<br>Aktienkurs: %{customdata:.2f} €<extra></extra>",
+                )
+            )
+            for gc_datum in gc_df.index:
+                fig_bt.add_vline(
+                    x=gc_datum,
+                    line_dash="dot",
+                    line_width=1.6,
+                    line_color="rgba(255, 215, 0, 0.65)",
+                )
+
+        fig_bt.update_layout(
+            title=dict(
+                text=f"{stamm_bt['name']} ({bt_ticker}) – Kauf-, Verkaufs- & Golden-Cross-Signale in Euro (€)",
+                font=dict(size=18, color="#E6EDF3"),
+            ),
             paper_bgcolor="#0E1117",
             plot_bgcolor="#161B22",
-            font=dict(color="#E6EDF3"),
-            height=340,
-            margin=dict(l=20, r=20, t=45, b=20),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            font=dict(color="#E6EDF3", size=13),
+            height=640,
+            hovermode="x unified",
+            margin=dict(l=25, r=25, t=75, b=25),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="left",
+                x=0,
+                bgcolor="rgba(22, 27, 34, 0.85)",
+                bordercolor="#30363D",
+                borderwidth=1,
+            ),
+            xaxis=dict(
+                gridcolor="#21262D",
+                showspikes=True,
+                spikemode="across",
+                spikesnap="cursor",
+                spikecolor="#8B949E",
+                spikethickness=1,
+                rangeselector=dict(
+                    bgcolor="#161B22",
+                    activecolor="#58A6FF",
+                    font=dict(color="#E6EDF3"),
+                    buttons=[
+                        dict(count=3, label="3M", step="month", stepmode="backward"),
+                        dict(count=6, label="6M", step="month", stepmode="backward"),
+                        dict(count=1, label="1J", step="year", stepmode="backward"),
+                        dict(step="all", label="Alle"),
+                    ],
+                ),
+            ),
+            yaxis=dict(
+                title="Kurs in Euro (€)",
+                gridcolor="#21262D",
+                tickformat=".2f",
+                ticksuffix=" €",
+            ),
         )
-        fig_sig.update_xaxes(gridcolor="#21262D")
-        fig_sig.update_yaxes(gridcolor="#21262D")
-        st.plotly_chart(fig_sig, use_container_width=True)
+        st.plotly_chart(fig_bt, use_container_width=True)
 
-        if bt_res["trades"]:
-            st.subheader("📋 Historische Trade-Liste")
-            st.dataframe(pd.DataFrame(bt_res["trades"]), use_container_width=True, hide_index=True)
+        st.subheader("📋 Chronologische Übersicht aller Signale")
+        if df_ereignisse.empty:
+            st.info("Im gewählten Zeitraum wurden für diese Strategie keine Signale ausgelöst. Wähle oben '2 Jahre' oder '3 Jahre'.")
         else:
-            st.info("Im gewählten Zeitraum wurde kein abgeschlossener Trade ausgelöst.")
-
-# ==============================================================================
-# BEREICH 4: PERSISTENTE WATCHLIST & DEPOT-CHECK (€)
-# ==============================================================================
-elif bereich == "4. Meine Watchlist & Depot (€)":
-    st.header("💼 Meine Watchlist & Depot-Tracking (€)")
-    st.write("Behalte deine eigenen Einstiegskurse im Blick und erhalte automatische Warnungen bei Überhitzung oder Trendbruch.")
-
-    with st.expander("➕ Neue Aktie zur Watchlist hinzufügen"):
-        c1, c2, c3, c4 = st.columns([1.2, 1.5, 1, 1])
-        neu_ticker = c1.text_input("Kürzel (z. B. RHM.DE):").strip().upper()
-        neu_name = c2.text_input("Name (optional):")
-        neu_stueck = c3.number_input("Stückzahl:", min_value=0.0, value=10.0, step=1.0)
-        neu_kauf = c4.number_input("Einstiegskurs (€):", min_value=0.01, value=100.0, step=1.0)
-
-        if st.button("Position speichern"):
-            if neu_ticker:
-                if not neu_name:
-                    neu_name = hole_stammdaten(neu_ticker)["name"]
-                st.session_state["watchlist"].append({
-                    "ticker": neu_ticker,
-                    "name": neu_name,
-                    "stueck": float(neu_stueck),
-                    "einstieg_eur": float(neu_kauf),
-                })
-                st.success(f"{neu_name} ({neu_ticker}) wurde hinzugefügt!")
-                st.rerun()
-
-    depot_zeilen = []
-    gesamt_einsatz = 0.0
-    gesamt_wert = 0.0
-
-    for pos in st.session_state["watchlist"]:
-        res = analysiere_aktie(pos["ticker"])
-        if not res:
-            continue
-        aktuell = res["kurs_eur"]
-        einsatz = pos["stueck"] * pos["einstieg_eur"]
-        wert = pos["stueck"] * aktuell
-        gewinn_eur = wert - einsatz
-        gewinn_pct = ((aktuell - pos["einstieg_eur"]) / pos["einstieg_eur"]) * 100
-
-        gesamt_einsatz += einsatz
-        gesamt_wert += wert
-
-        if res["rsi"] > 75:
-            aktion = "⚠️ Stark überkauft (RSI > 75) – Teilgewinn sichern?"
-        elif aktuell < res["sma50_eur"]:
-            aktion = "🔻 Unter 50-Tage-Linie – Stop-Loss prüfen"
-        else:
-            aktion = "✅ Trend intakt – Halten"
-
-        depot_zeilen.append({
-            "Unternehmen": f"{res['name']} ({pos['ticker']})",
-            "Stück": pos["stueck"],
-            "Einstieg (€)": round(pos["einstieg_eur"], 2),
-            "Aktuell (€)": round(aktuell, 2),
-            "Gesamtwert (€)": round(wert, 2),
-            "Gewinn/Verlust (€)": round(gewinn_eur, 2),
-            "Rendite (%)": round(gewinn_pct, 2),
-            "RSI": round(res["rsi"], 1),
-            "Hinweis": aktion,
-        })
-
-    if depot_zeilen:
-        gesamt_diff = gesamt_wert - gesamt_einsatz
-        gesamt_pct = (gesamt_diff / gesamt_einsatz * 100) if gesamt_einsatz > 0 else 0.0
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Gesamtwert Watchlist", f"{gesamt_wert:,.2f} €")
-        m2.metric("Investiertes Kapital", f"{gesamt_einsatz:,.2f} €")
-        m3.metric("Gesamt-Gewinn / Verlust", f"{gesamt_diff:+,.2f} €", f"{gesamt_pct:+.2f} %")
-
-        st.dataframe(pd.DataFrame(depot_zeilen), use_container_width=True, hide_index=True)
-
-        json_export = json.dumps(st.session_state["watchlist"], indent=2, ensure_ascii=False)
-        st.download_button(
-            label="💾 Aktuelle watchlist.json herunterladen (für GitHub speichern)",
-            data=json_export,
-            file_name="watchlist.json",
-            mime="application/json",
-        )
-        st.caption("Tipp: Lade diese 'watchlist.json' in dein GitHub-Repository 'stock-dashboard' hoch, damit deine Positionen dauerhaft gespeichert bleiben.")
+            st.dataframe(df_ereignisse.iloc[::-1], use_container_width=True, hide_index=True)
 
 # ==============================================================================
 # BEREICH 5: KRYPTO-ETFs & KAPITALFLÜSSE (7-TAGE & 30-TAGE SUMMEN)
@@ -1952,7 +1599,7 @@ elif bereich == "5. Krypto-ETFs & Kapitalflüsse":
             paper_bgcolor="#0E1117",
             plot_bgcolor="#161B22",
             font=dict(color="#E6EDF3"),
-            height=400,
+            height=420,
         )
         st.plotly_chart(fig_k, use_container_width=True)
 
@@ -1965,67 +1612,3 @@ elif bereich == "5. Krypto-ETFs & Kapitalflüsse":
             """,
             unsafe_allow_html=True,
         )
-
-# ==============================================================================
-# LIVE FINANZ-NEWSFEED
-# ==============================================================================
-elif bereich == "📰 Live Finanz-Newsfeed":
-    st.header("📰 Live Finanz-Newsfeed & Markt-Schlagzeilen")
-    st.write("Aktuelle Börsennachrichten auf Deutsch sowie gezielte Unternehmens-News zu deinen Einzelaktien.")
-
-    col_n1, col_n2 = st.columns([1.4, 1.6])
-    with col_n1:
-        news_kategorie = st.selectbox(
-            "Nachrichten-Fokus wählen:",
-            [
-                "Börse & DAX (Deutsch)",
-                "US-Tech & KI-Aktien",
-                "Krypto & Bitcoin ETFs",
-                "Zinsen, Fed & Wirtschaft",
-                "Einzelaktie abfragen",
-            ],
-        )
-    with col_n2:
-        news_ticker = st.text_input(
-            "Aktien-Kürzel für Einzel-News (z. B. NVDA, TTWO, ADS.DE, SAP.DE):",
-            value=st.session_state["ausgewaehlter_ticker"],
-        ).strip().upper()
-
-    with st.spinner("Lade aktuelle Schlagzeilen..."):
-        if news_kategorie == "Einzelaktie abfragen" and news_ticker:
-            stamm_n = hole_stammdaten(news_ticker)
-            st.subheader(f"Schlagzeilen zu {stamm_n['name']} ({news_ticker})")
-            meldungen = hole_aktien_news(news_ticker)
-            if not meldungen:
-                meldungen = hole_deutsche_markt_news(f"{stamm_n['name']} Aktie")
-        else:
-            such_map = {
-                "Börse & DAX (Deutsch)": "Börse DAX Aktien",
-                "US-Tech & KI-Aktien": "Nvidia Apple Microsoft KI Aktien Börse",
-                "Krypto & Bitcoin ETFs": "Bitcoin Ethereum Solana Krypto ETF",
-                "Zinsen, Fed & Wirtschaft": "US Notenbank Fed Zinsen Inflation Rezession",
-            }
-            st.subheader(f"Top-Meldungen: {news_kategorie}")
-            meldungen = hole_deutsche_markt_news(such_map.get(news_kategorie, "Börse DAX Aktien"))
-
-    if not meldungen:
-        st.warning("Es konnten gerade keine aktuellen Schlagzeilen geladen werden. Bitte versuche es gleich erneut.")
-    else:
-        for m in meldungen:
-            zusammenfassung_html = (
-                f"<div style='font-size:0.9rem; color:#C9D1D9; margin-top:4px;'>{m['zusammenfassung']}</div>"
-                if m["zusammenfassung"]
-                else ""
-            )
-            st.markdown(
-                f"""
-                <div class='news-card'>
-                    <div style='font-size:0.82rem; color:#8B949E;'>{m['quelle']} • {m['datum']}</div>
-                    <div style='font-size:1.02rem; font-weight:600; margin-top:4px;'>
-                        <a href="{m['link']}" target="_blank" style="color:#58A6FF; text-decoration:none;">{m['titel']} ↗</a>
-                    </div>
-                    {zusammenfassung_html}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
