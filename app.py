@@ -1,4 +1,5 @@
 from datetime import datetime
+import io
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -8,10 +9,10 @@ import streamlit as st
 import yfinance as yf
 
 # ==============================================================================
-# SEITEN-KONFIGURATION & DESIGN (Dark-Not-Black Theme)
+# SEITEN-KONFIGURATION & DESIGN (Stock Screener Pro - Dark-Not-Black Theme)
 # ==============================================================================
 st.set_page_config(
-    page_title="Aktien & Krypto Cockpit (€)",
+    page_title="Stock Screener Pro (€)",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -92,7 +93,7 @@ st.markdown(
 )
 
 # ==============================================================================
-# VOREINGESTELLTE AKTIEN-LISTEN, NAMENS-ZUORDNUNG & KRYPTO-DATEN
+# VOREINGESTELLTE AKTIEN-LISTEN, NAMENS-ZUORDNUNG, SEKTOREN & KRYPTO-DATEN
 # ==============================================================================
 INDEX_UNIVERSEN = {
     "China & Hongkong (Tech, E-Auto & Konsum)": [
@@ -121,7 +122,6 @@ INDEX_UNIVERSEN = {
     ],
 }
 
-# Kombiniertes Global-Universum ohne Duplikate
 INDEX_UNIVERSEN["Alle Märkte kombiniert (Global-Scan)"] = list(
     dict.fromkeys(
         ticker
@@ -130,7 +130,6 @@ INDEX_UNIVERSEN["Alle Märkte kombiniert (Global-Scan)"] = list(
     )
 )
 
-# Direkte Namens-Suche für ausgeschriebene Aktiennamen (inkl. Aliase)
 BEKANNTE_AKTIEN_NAMEN = {
     # China & Hongkong
     "xiaomi": ("1810.HK", "Xiaomi Corporation"),
@@ -252,6 +251,27 @@ SCHNELLAUSWAHL_AKTIEN = {
     "ASML Holding (ASML.AS) 🇪🇺": "ASML.AS",
 }
 
+SEKTOR_ETFS = [
+    ("Technologie & Software", "XLK"),
+    ("Halbleiter & Chips", "SMH"),
+    ("Kommunikation & Medien", "XLC"),
+    ("Finanzen & Banken", "XLF"),
+    ("Gesundheit & Pharma", "XLV"),
+    ("Industrie & Rüstung", "XLI"),
+    ("Zyklischer Konsum & E-Auto", "XLY"),
+    ("Basiskonsumgüter", "XLP"),
+    ("Energie, Öl & Gas", "XLE"),
+    ("Rohstoffe & Chemie", "XLB"),
+    ("Versorger & Infrastruktur", "XLU"),
+    ("Immobilien", "XLRE"),
+]
+
+DIVIDENDEN_STANDARD = [
+    "ALV.DE", "MUV2.DE", "DTE.DE", "MBG.DE", "BAS.DE",
+    "7203.T", "8306.T", "0700.HK", "1211.HK",
+    "AAPL", "MSFT", "KO", "JNJ", "PG", "MCD"
+]
+
 KRYPTO_LISTE = [
     {"name": "Bitcoin", "symbol": "BTC", "ticker": "BTC-EUR", "etf_basis_m": 420.0},
     {"name": "Ethereum", "symbol": "ETH", "ticker": "ETH-EUR", "etf_basis_m": 115.0},
@@ -262,8 +282,10 @@ KRYPTO_LISTE = [
     {"name": "Hedera", "symbol": "HBAR", "ticker": "HBAR-EUR", "etf_basis_m": 5.0},
 ]
 
+MONATSNAMEN_DE = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
+
 # ==============================================================================
-# HILFSFUNKTIONEN: NAMENSSUCHE, WÄHRUNGSUMRECHNUNG & INDIKATOREN
+# HILFSFUNKTIONEN: NAMENSSUCHE, WÄHRUNGSUMRECHNUNG, FRED & INDIKATOREN
 # ==============================================================================
 def bereinige_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Flacht MultiIndex-Spalten von yfinance ab und stellt 1D-Serien sicher."""
@@ -301,21 +323,17 @@ def suche_ticker_aus_name(eingabe: str) -> tuple[str, str]:
 
     klein = sauber.lower()
 
-    # 1. Exakter Treffer im kuratierten Verzeichnis
     if klein in BEKANNTE_AKTIEN_NAMEN:
         return BEKANNTE_AKTIEN_NAMEN[klein]
 
-    # 2. Teilstring-Treffer für ausgeschriebene Namen (z. B. "Xiaomi Corp", "Toyota Motor")
     if len(klein) >= 3:
         for schluessel, (tkr, vollname) in BEKANNTE_AKTIEN_NAMEN.items():
             if klein in schluessel or schluessel in klein:
                 return tkr, vollname
 
-    # 3. Wenn die Eingabe bereits wie ein echtes Ticker-Symbol aussieht (z. B. 1810.HK, SAP.DE, NVDA)
     if "." in sauber or "-" in sauber or (sauber.isupper() and len(sauber) <= 5 and " " not in sauber):
         return sauber.upper(), sauber.upper()
 
-    # 4. Live-Suche über yfinance Search / Yahoo Finance API für beliebige andere Firmennamen
     try:
         search_obj = yf.Search(sauber, max_results=8)
         quotes = getattr(search_obj, "quotes", []) or []
@@ -334,7 +352,6 @@ def suche_ticker_aus_name(eingabe: str) -> tuple[str, str]:
         if not aktien_treffer:
             aktien_treffer = [q for q in quotes if q.get("symbol")]
 
-        # Hauptbörsen gegenüber OTC (PNK) bevorzugen
         aktien_treffer.sort(
             key=lambda q: (
                 0 if q.get("exchange") in bevorzugte_boersen else (2 if q.get("exchange") == "PNK" else 1)
@@ -361,10 +378,9 @@ def hole_wechselkurs_zu_eur(waehrung: str) -> float:
         return 1.0
 
     w = waehrung.upper()
-    if w == "GBX":  # Britische Pence -> Pfund -> EUR
+    if w == "GBX":
         return hole_wechselkurs_zu_eur("GBP") / 100.0
 
-    # 1. Direktes Paar versuchen (z. B. HKDEUR=X, JPYEUR=X, USDEUR=X)
     try:
         df_dir = bereinige_dataframe(yf.download(f"{w}EUR=X", period="5d", interval="1d", progress=False))
         if not df_dir.empty and "Close" in df_dir.columns:
@@ -374,7 +390,6 @@ def hole_wechselkurs_zu_eur(waehrung: str) -> float:
     except Exception:
         pass
 
-    # 2. Inverses Paar versuchen (z. B. EURJPY=X, EURHKD=X, EURCNY=X – oft liquider!)
     try:
         df_inv = bereinige_dataframe(yf.download(f"EUR{w}=X", period="5d", interval="1d", progress=False))
         if not df_inv.empty and "Close" in df_inv.columns:
@@ -384,7 +399,6 @@ def hole_wechselkurs_zu_eur(waehrung: str) -> float:
     except Exception:
         pass
 
-    # 3. Realistische Fallback-Richtwerte (falls Yahoo kurzzeitig nicht antwortet)
     fallback = {
         "USD": 0.94,
         "CHF": 1.07,
@@ -420,16 +434,19 @@ def leite_waehrung_aus_ticker_ab(ticker: str) -> str:
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def hole_stammdaten(ticker: str) -> dict:
-    """Holt den vollen Firmennamen, die Heimatwährung und den nächsten Quartalszahlen-Termin."""
+    """Holt den vollen Firmennamen, die Heimatwährung, Sektor, Dividende und nächsten Quartalszahlen-Termin."""
     standard_waehrung = leite_waehrung_aus_ticker_ab(ticker)
     info_daten = {
         "name": ticker,
         "waehrung": standard_waehrung,
         "sektor": "Keine Angabe",
         "earnings_datum": None,
+        "div_rendite_pct": 0.0,
+        "div_rate_orig": 0.0,
+        "ex_div_datum": None,
+        "payout_ratio_pct": None,
     }
 
-    # Bekannten Vollnamen vorbelegen, falls vorhanden
     for _, (tkr, vollname) in BEKANNTE_AKTIEN_NAMEN.items():
         if tkr == ticker.upper():
             info_daten["name"] = vollname
@@ -445,6 +462,24 @@ def hole_stammdaten(ticker: str) -> dict:
         if info.get("sector"):
             info_daten["sektor"] = info.get("sector")
 
+        div_yield = info.get("dividendYield")
+        if div_yield is not None:
+            # yfinance liefert teils 0.035 (3.5%) oder bereits 3.5
+            info_daten["div_rendite_pct"] = round(div_yield * 100, 2) if div_yield < 0.35 else round(div_yield, 2)
+
+        if info.get("dividendRate"):
+            info_daten["div_rate_orig"] = float(info["dividendRate"])
+
+        if info.get("payoutRatio") is not None:
+            info_daten["payout_ratio_pct"] = round(float(info["payoutRatio"]) * 100, 1)
+
+        if info.get("exDividendDate"):
+            try:
+                ts = int(info["exDividendDate"])
+                info_daten["ex_div_datum"] = datetime.fromtimestamp(ts).strftime("%d.%m.%Y")
+            except Exception:
+                pass
+
         cal = t.calendar
         if isinstance(cal, dict) and "Earnings Date" in cal and cal["Earnings Date"]:
             ed = cal["Earnings Date"][0]
@@ -455,6 +490,226 @@ def hole_stammdaten(ticker: str) -> dict:
         pass
 
     return info_daten
+
+
+# ==============================================================================
+# FRED REZESSIONS-BAROMETER (OHNE API-KEY – 6 MAKRO-INDIKATOREN)
+# ==============================================================================
+@st.cache_data(ttl=21600, show_spinner=False)
+def hole_fred_serie(series_id: str) -> pd.Series:
+    """Lädt eine historische Wirtschaftsreihe direkt von der US-Notenbank FRED (ohne API-Key)."""
+    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+    try:
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+        if resp.status_code != 200 or not resp.text:
+            return pd.Series(dtype=float)
+        df = pd.read_csv(io.StringIO(resp.text))
+        if df.shape[1] < 2:
+            return pd.Series(dtype=float)
+        datum_spalte = df.columns[0]
+        wert_spalte = df.columns[1]
+        df[datum_spalte] = pd.to_datetime(df[datum_spalte], errors="coerce")
+        df[wert_spalte] = pd.to_numeric(df[wert_spalte].replace(".", np.nan), errors="coerce")
+        df = df.dropna(subset=[datum_spalte, wert_spalte]).set_index(datum_spalte)
+        return df[wert_spalte].sort_index()
+    except Exception:
+        return pd.Series(dtype=float)
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def berechne_rezessions_barometer() -> dict:
+    """
+    Analysiert 6 zentrale US-Notenbank-Indikatoren (FRED) via Ampelsystem und berechnet
+    einen Rezessions-Risiko-Score von 0 bis 100 inklusive Strategie-Empfehlung.
+    """
+    indikatoren = []
+    risiko_punkte = 0
+    verfuegbare_gewichte = 0
+
+    # 1. Sahm-Regel Rezessionsindikator (SAHMREALTIME) – Gewicht: 25 Punkte
+    sahm = hole_fred_serie("SAHMREALTIME")
+    if not sahm.empty:
+        verfuegbare_gewichte += 25
+        v = float(sahm.iloc[-1])
+        stand = sahm.index[-1].strftime("%m/%Y")
+        if v >= 0.50:
+            risiko_punkte += 25
+            ampel, bewertung = "🔴 Warnsignal", "Über 0,50 %-Schwelle – historisch starkes Rezessionssignal"
+        elif v >= 0.30:
+            risiko_punkte += 14
+            ampel, bewertung = "🟡 Beobachtung", "Leicht erhöht – Arbeitsmarkt verliert etwas an Schwung"
+        else:
+            risiko_punkte += 2
+            ampel, bewertung = "🟢 Entspannt", "Deutlich unter der kritischen 0,50 %-Schwelle"
+        indikatoren.append({
+            "Indikator": "1. Sahm-Regel (Arbeitsmarkt-Trigger)",
+            "Aktuell": f"{v:.2f} %-Pkt.",
+            "Schwelle": "≥ 0,50 %-Pkt.",
+            "Ampel": ampel,
+            "Stand": stand,
+            "Einschätzung": bewertung,
+        })
+
+    # 2. 10J–2J US-Zinskurve (T10Y2Y) – Gewicht: 20 Punkte
+    t10y2y = hole_fred_serie("T10Y2Y")
+    if not t10y2y.empty:
+        verfuegbare_gewichte += 20
+        v = float(t10y2y.iloc[-1])
+        min_18m = float(t10y2y.tail(380).min())
+        stand = t10y2y.index[-1].strftime("%d.%m.%Y")
+        if v < 0.0:
+            risiko_punkte += 18
+            ampel, bewertung = "🔴 Warnsignal", "Inverse Zinskurve (< 0 %) – klassisches Frühwarnsignal"
+        elif min_18m < -0.10 and v >= 0.0:
+            risiko_punkte += 12
+            ampel, bewertung = "🟡 Beobachtung", "Re-Steepening nach Inversion – Übergangsphase genau beobachten"
+        else:
+            risiko_punkte += 3
+            ampel, bewertung = "🟢 Entspannt", "Normale, positiv geneigte Zinskurve"
+        indikatoren.append({
+            "Indikator": "2. Zinskurve (10J minus 2J US-Staatsanleihen)",
+            "Aktuell": f"{v:+.2f} %",
+            "Schwelle": "< 0,00 % (Invers)",
+            "Ampel": ampel,
+            "Stand": stand,
+            "Einschätzung": bewertung,
+        })
+
+    # 3. 10J–3M US-Zinskurve (T10Y3M) – Gewicht: 15 Punkte
+    t10y3m = hole_fred_serie("T10Y3M")
+    if not t10y3m.empty:
+        verfuegbare_gewichte += 15
+        v = float(t10y3m.iloc[-1])
+        stand = t10y3m.index[-1].strftime("%d.%m.%Y")
+        if v < 0.0:
+            risiko_punkte += 14
+            ampel, bewertung = "🔴 Warnsignal", "Kurzfristzinsen über Langfristzinsen – Geldpolitik wirkt bremsend"
+        elif v < 0.40:
+            risiko_punkte += 7
+            ampel, bewertung = "🟡 Beobachtung", "Flache Zinsstruktur – konjunkturelle Abkühlung möglich"
+        else:
+            risiko_punkte += 2
+            ampel, bewertung = "🟢 Entspannt", "Gesunder Zinsabstand unterstützt Kreditvergabe"
+        indikatoren.append({
+            "Indikator": "3. Fed-Zinsstruktur (10J minus 3M)",
+            "Aktuell": f"{v:+.2f} %",
+            "Schwelle": "< 0,00 %",
+            "Ampel": ampel,
+            "Stand": stand,
+            "Einschätzung": bewertung,
+        })
+
+    # 4. US-Arbeitslosenquote (UNRATE) – Gewicht: 15 Punkte
+    unrate = hole_fred_serie("UNRATE")
+    if not unrate.empty and len(unrate) >= 13:
+        verfuegbare_gewichte += 15
+        v = float(unrate.iloc[-1])
+        vor_12m = float(unrate.iloc[-13])
+        diff_12m = v - vor_12m
+        stand = unrate.index[-1].strftime("%m/%Y")
+        if diff_12m >= 0.5 or v >= 5.0:
+            risiko_punkte += 14
+            ampel, bewertung = "🔴 Warnsignal", f"Spürbarer Anstieg um {diff_12m:+.1f} %-Pkt. gegenüber Vorjahr"
+        elif diff_12m >= 0.2:
+            risiko_punkte += 8
+            ampel, bewertung = "🟡 Beobachtung", f"Leichter Anstieg ({diff_12m:+.1f} %-Pkt. YoY), aber historisch moderat"
+        else:
+            risiko_punkte += 2
+            ampel, bewertung = "🟢 Entspannt", f"Stabiler Arbeitsmarkt ({diff_12m:+.1f} %-Pkt. gegenüber Vorjahr)"
+        indikatoren.append({
+            "Indikator": "4. US-Arbeitslosenquote (UNRATE)",
+            "Aktuell": f"{v:.1f} %",
+            "Schwelle": "+0,5 %-Pkt. YoY",
+            "Ampel": ampel,
+            "Stand": stand,
+            "Einschätzung": bewertung,
+        })
+
+    # 5. High-Yield Credit Spread (BAMLH0A0HYM2) – Gewicht: 15 Punkte
+    hy = hole_fred_serie("BAMLH0A0HYM2")
+    if not hy.empty:
+        verfuegbare_gewichte += 15
+        v = float(hy.iloc[-1])
+        stand = hy.index[-1].strftime("%d.%m.%Y")
+        if v >= 5.0:
+            risiko_punkte += 15
+            ampel, bewertung = "🔴 Warnsignal", "Hoher Kreditstress – Risikoaufschläge für Firmen deutlich gestiegen"
+        elif v >= 3.8:
+            risiko_punkte += 8
+            ampel, bewertung = "🟡 Beobachtung", "Leicht erhöhte Risikoaufschläge am Anleihemarkt"
+        else:
+            risiko_punkte += 2
+            ampel, bewertung = "🟢 Entspannt", "Niedrige Risikoaufschläge – Anleihemarkt signalisiert Ruhe"
+        indikatoren.append({
+            "Indikator": "5. High-Yield Credit Spread (Kreditrisiko)",
+            "Aktuell": f"{v:.2f} %",
+            "Schwelle": "≥ 5,00 %",
+            "Ampel": ampel,
+            "Stand": stand,
+            "Einschätzung": bewertung,
+        })
+
+    # 6. US-Industrieproduktion YoY (INDPRO) – Gewicht: 10 Punkte
+    indpro = hole_fred_serie("INDPRO")
+    if not indpro.empty and len(indpro) >= 13:
+        verfuegbare_gewichte += 10
+        v = float(indpro.iloc[-1])
+        vor_12m = float(indpro.iloc[-13])
+        yoy_pct = ((v - vor_12m) / vor_12m) * 100 if vor_12m > 0 else 0.0
+        stand = indpro.index[-1].strftime("%m/%Y")
+        if yoy_pct <= -1.5:
+            risiko_punkte += 10
+            ampel, bewertung = "🔴 Warnsignal", "Industrieproduktion schrumpft spürbar im Jahresvergleich"
+        elif yoy_pct < 0.5:
+            risiko_punkte += 5
+            ampel, bewertung = "🟡 Beobachtung", "Stagnierende Industrieproduktion – verhaltenes Wachstum"
+        else:
+            risiko_punkte += 1
+            ampel, bewertung = "🟢 Entspannt", "Industrieproduktion wächst solide im Jahresvergleich"
+        indikatoren.append({
+            "Indikator": "6. US-Industrieproduktion (Jahresrate)",
+            "Aktuell": f"{yoy_pct:+.2f} %",
+            "Schwelle": "≤ -1,50 % YoY",
+            "Ampel": ampel,
+            "Stand": stand,
+            "Einschätzung": bewertung,
+        })
+
+    if verfuegbare_gewichte > 0:
+        score = int(np.clip(round((risiko_punkte / verfuegbare_gewichte) * 100), 5, 95))
+    else:
+        score = 28
+
+    if score < 35:
+        ampel_gesamt = "🟢 NIEDRIGES REZESSIONSRISIKO (Expansion)"
+        strategie = (
+            "<b>Wachstum & Trend-Follower bevorzugen:</b> Die Konjunkturdaten und Kreditmärkte zeigen keine akute "
+            "Rezessionsgefahr. Zyklische Qualitätsaktien, Tech-Führer und Golden-Cross-Signale haben Rückenwind. "
+            "Normale Positionsgrößen mit regulärem ATR-Stop-Loss sind gut vertretbar."
+        )
+    elif score < 62:
+        ampel_gesamt = "🟡 ERHÖHTE AUFMERKSAMKEIT (Spätzyklische Phase)"
+        strategie = (
+            "<b>Qualität & selektive Einstiege kombinieren:</b> Einzelne Frühindikatoren mahnen zur Vorsicht, aber ein "
+            "breiter Wirtschaftsabschwung ist nicht bestätigt. Setze auf bilanzstarke Marktführer, gestaffelte "
+            "Teilkäufe bei Turnaround-Chancen (TFA) und halte ca. 10–20 % Cash-Reserve für Rücksetzer bereit."
+        )
+    else:
+        ampel_gesamt = "🔴 ERHÖHTES REZESSIONSRISIKO (Defensiv-Modus)"
+        strategie = (
+            "<b>Kapitalschutz & Defensive priorisieren:</b> Mehrere Makro-Indikatoren signalisieren deutlichen "
+            "Konjunkturgegenwind. Ziehe Stop-Loss-Marken eng nach, reduziere hochverschuldete Zykliker und "
+            "bevorzuge defensive Sektoren (Gesundheit, Basiskonsum, Versorger) sowie eine höhere Cash-Quote."
+        )
+
+    return {
+        "score": score,
+        "ampel_gesamt": ampel_gesamt,
+        "strategie": strategie,
+        "tabelle": pd.DataFrame(indikatoren),
+        "sahm_serie": sahm.tail(60) if not sahm.empty else pd.Series(dtype=float),
+        "zinskurve_serie": t10y2y.tail(750) if not t10y2y.empty else pd.Series(dtype=float),
+    }
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -476,11 +731,9 @@ def lade_kursdaten_eur(ticker: str, zeitraum: str = "1y") -> pd.DataFrame:
         df["Volume"] = pd.to_numeric(df["Volume"], errors="coerce").fillna(0)
         df = df.dropna(subset=["Close"]).copy()
 
-        # Gleitende Durchschnitte (SMA 50 & SMA 200)
         df["SMA_50"] = df["Close"].rolling(window=50).mean()
         df["SMA_200"] = df["Close"].rolling(window=200).mean()
 
-        # RSI (14 Tage nach Wilder-Glättung)
         delta = df["Close"].diff()
         gewinn = delta.clip(lower=0)
         verlust = -delta.clip(upper=0)
@@ -489,23 +742,19 @@ def lade_kursdaten_eur(ticker: str, zeitraum: str = "1y") -> pd.DataFrame:
         rs = avg_gewinn / avg_verlust.replace(0, np.nan)
         df["RSI_14"] = (100 - (100 / (1 + rs))).fillna(50)
 
-        # MACD (12, 26, 9)
         ema_12 = df["Close"].ewm(span=12, adjust=False).mean()
         ema_26 = df["Close"].ewm(span=26, adjust=False).mean()
         df["MACD"] = ema_12 - ema_26
         df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
         df["MACD_Hist"] = df["MACD"] - df["MACD_Signal"]
 
-        # ATR (14 Tage) für Stop-Loss-Berechnung
         high_low = df["High"] - df["Low"]
         high_close = (df["High"] - df["Close"].shift()).abs()
         low_close = (df["Low"] - df["Close"].shift()).abs()
         true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         df["ATR_14"] = true_range.rolling(window=14).mean()
 
-        # Volumen-Durchschnitt (20 Tage)
         df["Vol_SMA_20"] = df["Volume"].rolling(window=20).mean()
-
         return df
     except Exception:
         return pd.DataFrame()
@@ -547,28 +796,22 @@ def analysiere_aktie(ticker: str) -> dict | None:
     abstand_hoch_pct = ((aktuell - hoch_52w) / hoch_52w) * 100
     abstand_tief_pct = ((aktuell - tief_52w) / tief_52w) * 100 if tief_52w > 0 else 0.0
 
-    # Golden Cross Check (SMA 50 kreuzt SMA 200 in den letzten 7 Handelstagen nach oben)
     golden_cross_neu = False
     if len(df) >= 8 and not df["SMA_200"].iloc[-8:].isna().any():
         golden_cross_neu = (df["SMA_50"].iloc[-8] <= df["SMA_200"].iloc[-8]) and (sma50 > sma200)
     golden_cross_nah = (not golden_cross_neu) and (-2.5 <= sma50_zu_200_pct < 0.0) and (sma50 > sma50_vor5)
 
-    # Trend-Follower Check
     ist_trend_follower = (aktuell > sma50) and (sma50 > sma200) and (45 <= rsi <= 72)
-
-    # TFA-Check (Turnaround-Formel: >= 35% unter 52W-Hoch + erste Bodenbildung / Kaufdruck)
     ist_tfa = (abstand_hoch_pct <= -35.0) and (
         (rsi < 38) or (rsi_vor5 < 35 and rsi > rsi_vor5) or (aktuell > sma50 and macd_hist > macd_hist_vortag)
     )
 
-    # ATR-Stop-Loss & Chance-Risiko-Verhältnis (CRV)
     stop_loss_eur = max(0.01, aktuell - 2.0 * atr)
     stop_puffer_pct = ((aktuell - stop_loss_eur) / aktuell) * 100
     risiko_eur = max(0.01, aktuell - stop_loss_eur)
     chance_eur = max(0.0, hoch_52w - aktuell)
     crv = round(chance_eur / risiko_eur, 2)
 
-    # Earnings-Warnung prüfen
     earnings_warnung = None
     if stamm["earnings_datum"]:
         try:
@@ -579,9 +822,7 @@ def analysiere_aktie(ticker: str) -> dict | None:
         except Exception:
             pass
 
-    # --------------------------------------------------------------------------
-    # AUSFÜHRLICHE BEGRÜNDUNGEN & KLARTEXT-GESAMTURTEIL
-    # --------------------------------------------------------------------------
+    # Ausführliche Begründungen & Klartext-Gesamturteil
     if golden_cross_neu:
         signal_text = "Starkes Kaufsignal (Frisches Golden Cross)"
         signal_farbe = "green"
@@ -657,7 +898,6 @@ def analysiere_aktie(ticker: str) -> dict | None:
             f"Ein neues Kaufsignal entsteht erst bei einem dynamischen Ausbruch über {max(sma50, sma200):.2f} € unter erhöhtem Volumen."
         )
 
-    # Detaillierte Einzelbausteine für die Detailansicht
     trend_detail = (
         f"Der aktuelle Kurs von <b>{aktuell:.2f} €</b> liegt <b>{abstand_sma50_pct:+.1f} %</b> "
         f"{'über' if aktuell >= sma50 else 'unter'} der 50-Tage-Linie (<b>{sma50:.2f} €</b>) und "
@@ -789,11 +1029,9 @@ def berechne_backtest_signale(df: pd.DataFrame, strategie: str) -> tuple[pd.Data
     rsi_vor = df_bt["RSI_14"].shift(1)
     macd_vor = df_bt["MACD_Hist"].shift(1)
 
-    # Exakte Golden-Cross- & Death-Cross-Tage (Kreuzungspunkte von SMA 50 & SMA 200)
     df_bt["Golden_Cross"] = (sma50_vor <= sma200_vor) & (df_bt["SMA_50"] > df_bt["SMA_200"])
     df_bt["Death_Cross"] = (sma50_vor >= sma200_vor) & (df_bt["SMA_50"] < df_bt["SMA_200"])
 
-    # Saubere Zustandsmaschine: Kauf- und Verkaufssignale wechseln sich logisch ab (kein Signal-Spam)
     kauf_flags = []
     verkauf_flags = []
     ereignisse = []
@@ -842,7 +1080,7 @@ def berechne_backtest_signale(df: pd.DataFrame, strategie: str) -> tuple[pd.Data
                     verkauf_trigger = True
                     grund = "Überkauft (RSI > 75) & fallender MACD"
 
-        else:  # Kombi-Strategie: Golden Cross + Trend & RSI
+        else:
             if not in_position:
                 if gc:
                     kauf_trigger = True
@@ -951,15 +1189,45 @@ def lade_krypto_daten() -> pd.DataFrame:
     return pd.DataFrame(zeilen)
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def lade_sektor_heatmap() -> pd.DataFrame:
+    """Lädt Sektor-ETFs, rechnet in Euro (€) um und berechnet 1T, 1W, 1M und 3M Performance."""
+    faktor_usd_eur = hole_wechselkurs_zu_eur("USD")
+    zeilen = []
+    for sektor_name, etf_ticker in SEKTOR_ETFS:
+        df = bereinige_dataframe(yf.download(etf_ticker, period="4mo", interval="1d", progress=False))
+        if df.empty or len(df) < 65:
+            continue
+        close_eur = pd.to_numeric(df["Close"], errors="coerce").dropna() * faktor_usd_eur
+        aktuell = float(close_eur.iloc[-1])
+        p_1t = ((aktuell - float(close_eur.iloc[-2])) / float(close_eur.iloc[-2])) * 100
+        p_1w = ((aktuell - float(close_eur.iloc[-6])) / float(close_eur.iloc[-6])) * 100
+        p_1m = ((aktuell - float(close_eur.iloc[-22])) / float(close_eur.iloc[-22])) * 100
+        p_3m = ((aktuell - float(close_eur.iloc[-64])) / float(close_eur.iloc[-64])) * 100
+        zeilen.append({
+            "Sektor": sektor_name,
+            "ETF": etf_ticker,
+            "Kurs (€)": round(aktuell, 2),
+            "1 Tag (%)": round(p_1t, 2),
+            "1 Woche (%)": round(p_1w, 2),
+            "1 Monat (%)": round(p_1m, 2),
+            "3 Monate (%)": round(p_3m, 2),
+        })
+    return pd.DataFrame(zeilen)
+
+
 # ==============================================================================
 # SESSION STATE & NAVIGATION-CALLBACKS
 # ==============================================================================
 BEREICHE = [
-    "1. Markt-Überblick & Stimmung",
+    "1. Markt-Überblick & Rezessions-Barometer",
     "2. Trend- & Turnaround-Scanner",
     "3. Einzelaktien-Analyse (€)",
-    "4. Strategie-Backtesting & Signale",
-    "5. Krypto-ETFs & Kapitalflüsse",
+    "4. Strategie-Backtesting & Signal-Chart",
+    "5. Saisonalitäts-Analyse (€)",
+    "6. Sektor-Heatmap & Rotation",
+    "7. Dividenden-Kalender (€)",
+    "8. Krypto-ETFs & Kapitalflüsse",
 ]
 
 if "ausgewaehlter_ticker" not in st.session_state:
@@ -980,51 +1248,51 @@ def wechsele_zu_einzelanalyse(ticker: str, anzeige_name: str):
 
 def wechsele_zu_backtesting(ticker: str):
     st.session_state["ausgewaehlter_ticker"] = ticker
-    st.session_state["nav_bereich"] = "4. Strategie-Backtesting & Signale"
+    st.session_state["nav_bereich"] = "4. Strategie-Backtesting & Signal-Chart"
 
 
 # ==============================================================================
 # SEITENLEISTE
 # ==============================================================================
 with st.sidebar:
-    st.title("📈 Börsen-Cockpit (€)")
-    st.caption("Alle Kurse automatisch in Euro (€) • Inkl. China & Japan")
+    st.title("📈 Stock Screener Pro (€)")
+    st.caption("Alle Kurse in Euro (€) • Inkl. Rezessions-Barometer, China & Japan")
 
-    bereich = st.radio("Bereich wählen:", BEREICHE, key="nav_bereich")
+    bereich = st.radio("Navigation:", BEREICHE, key="nav_bereich")
 
     st.divider()
-    if st.button("🔄 Kurse jetzt aktualisieren"):
+    if st.button("🔄 Alle Live-Daten aktualisieren"):
         st.cache_data.clear()
         st.rerun()
 
-    with st.expander("ℹ️ Kurze Erklärung der Begriffe"):
+    with st.expander("ℹ️ Indikator- & Makro-Lexikon"):
         st.markdown(
             """
-            * **SMA 50 / SMA 200:** Durchschnittskurs der letzten 50 bzw. 200 Handelstage. Liegt der Kurs darüber, ist der Trend positiv.
+            * **Sahm-Regel:** Steigt der 3-Monats-Schnitt der US-Arbeitslosenquote um mind. 0,50 %-Punkte über das 12-Monats-Tief, begann historisch fast immer eine Rezession.
+            * **Zinskurve (10J–2J / 10J–3M):** Liegen Kurzfristzinsen über Langfristzinsen (< 0 %), gilt das als klassisches Frühwarnsignal.
             * **Golden Cross (★):** Die 50-Tage-Linie kreuzt die 200-Tage-Linie nach oben – ein starkes mittelfristiges Kaufsignal.
-            * **RSI (14):** Misst, ob eine Aktie überkauft (> 70) oder überverkauft (< 30) ist.
-            * **TFA (Turnaround-Formel):** Stark gefallene Aktien (mind. 35 % unter Jahreshoch), die einen Boden bilden.
-            * **CRV (Chance-Risiko-Verhältnis):** Gewinnpotenzial bis zum 52W-Hoch im Vergleich zum Stop-Loss-Risiko (ab 2,0 : 1 attraktiv).
+            * **TFA (Turnaround-Formel):** Stark gefallene Aktien (mind. 35 % unter 52W-Hoch), die einen Boden bilden.
             """
         )
 
 # ==============================================================================
-# BEREICH 1: MARKT-ÜBERBLICK & SENTIMENT-TACHOMETER
+# BEREICH 1: MARKT-ÜBERBLICK, STIMMUNG & REZESSIONS-BAROMETER (FRED)
 # ==============================================================================
-if bereich == "1. Markt-Überblick & Stimmung":
-    st.header("🧭 Markt-Überblick & Stimmungs-Tachometer")
-    st.write("Aktuelle Großwetterlage an den internationalen Börsen – live berechnet.")
+if bereich == "1. Markt-Überblick & Rezessions-Barometer":
+    st.header("🧭 Markt-Überblick & FRED Rezessions-Barometer")
+    st.write("Kombination aus kurzfristiger Börsenstimmung (VIX) und 6 Echtzeit-Wirtschaftsindikatoren der US-Notenbank (FRED).")
 
     sentiment = berechne_markt_sentiment()
+    rezession = berechne_rezessions_barometer()
 
-    col_gauge, col_info = st.columns([1.2, 1])
-    with col_gauge:
+    col_g1, col_g2 = st.columns(2)
+    with col_g1:
         fig_gauge = go.Figure(
             go.Indicator(
                 mode="gauge+number",
                 value=sentiment["punkte"],
-                title={"text": "Markt-Stimmung (0 = Angst, 100 = Gier)", "font": {"size": 18, "color": "#E6EDF3"}},
-                number={"font": {"size": 44, "color": "#E6EDF3"}},
+                title={"text": "Börsen-Stimmung (0 = Angst, 100 = Gier)", "font": {"size": 17, "color": "#E6EDF3"}},
+                number={"font": {"size": 42, "color": "#E6EDF3"}},
                 gauge={
                     "axis": {"range": [0, 100], "tickcolor": "#E6EDF3"},
                     "bar": {"color": "#58A6FF"},
@@ -1039,34 +1307,96 @@ if bereich == "1. Markt-Überblick & Stimmung":
                 },
             )
         )
-        fig_gauge.update_layout(
-            paper_bgcolor="#0E1117",
-            font={"color": "#E6EDF3"},
-            height=300,
-            margin=dict(l=20, r=20, t=50, b=20),
-        )
+        fig_gauge.update_layout(paper_bgcolor="#0E1117", font={"color": "#E6EDF3"}, height=290, margin=dict(l=20, r=20, t=50, b=10))
         st.plotly_chart(fig_gauge, use_container_width=True)
-
-    with col_info:
-        st.subheader("Aktuelle Einschätzung")
         st.markdown(
-            f"<div class='metric-card'><h4>{sentiment['label']}</h4>"
-            f"<p>Angst-Barometer (VIX): <b>{sentiment['vix']}</b> (Unter 20 bedeutet ruhiges Fahrwasser)</p></div>",
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            """
-            <div class='info-box'>
-            <b>Was bedeutet das für deine Strategie?</b><br>
-            • Bei <b>Angst (unter 40)</b> lohnen sich antizyklische Turnaround-Kandidaten (TFA-Scanner).<br>
-            • Bei <b>Optimismus (55–75)</b> laufen Trend-Follower & Golden-Cross-Signale am zuverlässigsten.<br>
-            • Bei <b>Extremer Gier (über 80)</b> keine Kurse jagen, sondern Stop-Loss-Marken eng nachziehen.
-            </div>
-            """,
+            f"<div class='metric-card'><b>Aktuelle Stimmung:</b> {sentiment['label']}<br>"
+            f"Angst-Barometer (VIX): <b>{sentiment['vix']}</b></div>",
             unsafe_allow_html=True,
         )
 
-    st.subheader("Schnell-Check der Welt-Leitindizes")
+    with col_g2:
+        fig_rez = go.Figure(
+            go.Indicator(
+                mode="gauge+number",
+                value=rezession["score"],
+                title={"text": "FRED Rezessions-Barometer (0 = Sicher, 100 = Rezession)", "font": {"size": 17, "color": "#E6EDF3"}},
+                number={"font": {"size": 42, "color": "#E6EDF3"}},
+                gauge={
+                    "axis": {"range": [0, 100], "tickcolor": "#E6EDF3"},
+                    "bar": {"color": "#FFD54F"},
+                    "bgcolor": "#161B22",
+                    "steps": [
+                        {"range": [0, 35], "color": "#2E7D32"},
+                        {"range": [35, 62], "color": "#E65100"},
+                        {"range": [62, 100], "color": "#B71C1C"},
+                    ],
+                },
+            )
+        )
+        fig_rez.update_layout(paper_bgcolor="#0E1117", font={"color": "#E6EDF3"}, height=290, margin=dict(l=20, r=20, t=50, b=10))
+        st.plotly_chart(fig_rez, use_container_width=True)
+        st.markdown(
+            f"<div class='metric-card'><b>Makro-Ampel:</b> {rezession['ampel_gesamt']}<br>"
+            f"Basis: 6 Live-Zeitreihen der Federal Reserve (FRED)</div>",
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        f"<div class='info-box'><b>📋 Portfolio-Strategie-Empfehlung laut Rezessions-Barometer:</b><br>{rezession['strategie']}</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.subheader("🚦 Die 6 FRED Rezessions-Indikatoren im Detail")
+    if not rezession["tabelle"].empty:
+        st.dataframe(rezession["tabelle"], use_container_width=True, hide_index=True)
+
+    c_fred1, c_fred2 = st.columns(2)
+    with c_fred1:
+        if not rezession["sahm_serie"].empty:
+            fig_sahm = go.Figure()
+            fig_sahm.add_trace(
+                go.Scatter(
+                    x=rezession["sahm_serie"].index,
+                    y=rezession["sahm_serie"].values,
+                    name="Sahm-Regel (%-Pkt.)",
+                    line=dict(color="#58A6FF", width=2.2),
+                )
+            )
+            fig_sahm.add_hline(y=0.50, line_dash="dash", line_color="#FF5252", annotation_text="Rezessions-Schwelle (0,50)")
+            fig_sahm.update_layout(
+                title="Sahm-Regel Verlauf (letzte 5 Jahre)",
+                paper_bgcolor="#0E1117",
+                plot_bgcolor="#161B22",
+                font=dict(color="#E6EDF3"),
+                height=300,
+                margin=dict(l=15, r=15, t=45, b=15),
+            )
+            st.plotly_chart(fig_sahm, use_container_width=True)
+
+    with c_fred2:
+        if not rezession["zinskurve_serie"].empty:
+            fig_zk = go.Figure()
+            fig_zk.add_trace(
+                go.Scatter(
+                    x=rezession["zinskurve_serie"].index,
+                    y=rezession["zinskurve_serie"].values,
+                    name="10J–2J Spread (%)",
+                    line=dict(color="#00E676", width=2.2),
+                )
+            )
+            fig_zk.add_hline(y=0.0, line_dash="dash", line_color="#FFB300", annotation_text="Nulllinie (Inversion < 0 %)")
+            fig_zk.update_layout(
+                title="US-Zinskurve 10J minus 2J (letzte 3 Jahre)",
+                paper_bgcolor="#0E1117",
+                plot_bgcolor="#161B22",
+                font=dict(color="#E6EDF3"),
+                height=300,
+                margin=dict(l=15, r=15, t=45, b=15),
+            )
+            st.plotly_chart(fig_zk, use_container_width=True)
+
+    st.subheader("🌍 Welt-Leitindizes im Schnell-Check")
     indizes = [
         ("DAX 🇩🇪", "^GDAXI"),
         ("S&P 500 🇺🇸", "^GSPC"),
@@ -1250,7 +1580,6 @@ elif bereich == "3. Einzelaktien-Analyse (€)":
         k4.metric("Chance-Risiko (CRV)", f"{daten['crv']:.1f} : 1", "Attraktiv ≥ 2,0" if daten["crv"] >= 2.0 else "Moderat / Eng")
         k5.metric("52-Wochen-Hoch", f"{daten['hoch_52w_eur']:.2f} €", f"{daten['abstand_hoch_pct']:.1f} %")
 
-        # Ausführliches Gesamturteil & detaillierte Begründung
         st.markdown(
             f"""
             <div class='metric-card'>
@@ -1276,7 +1605,6 @@ elif bereich == "3. Einzelaktien-Analyse (€)":
             args=(daten["ticker"],),
         )
 
-        # Kurschart in Euro mit SMA 50, SMA 200 & Stop-Loss
         df_plot = daten["df"].tail(200)
         fig = make_subplots(
             rows=2,
@@ -1338,7 +1666,7 @@ elif bereich == "3. Einzelaktien-Analyse (€)":
 # ==============================================================================
 # BEREICH 4: BACKTESTING & SIGNAL-CHART (OHNE KAPITALENTWICKLUNG, MIT GOLDEN CROSS)
 # ==============================================================================
-elif bereich == "4. Strategie-Backtesting & Signale":
+elif bereich == "4. Strategie-Backtesting & Signal-Chart":
     st.header("📊 Signal-Backtesting: Kauf-, Verkaufs- & Golden-Cross-Signale")
     st.write("Übersichtliche Darstellung aller historischen Einstiegs-, Ausstiegs- und Golden-Cross-Punkte direkt im Euro-Chart.")
 
@@ -1348,7 +1676,7 @@ elif bereich == "4. Strategie-Backtesting & Signale":
             "Aktie (Name oder Kürzel, z. B. Xiaomi, BYD, NVDA):",
             value=st.session_state["ausgewaehlter_ticker"],
         )
-        bt_ticker, bt_name_hint = suche_ticker_aus_name(bt_eingabe)
+        bt_ticker, _ = suche_ticker_aus_name(bt_eingabe)
         st.session_state["ausgewaehlter_ticker"] = bt_ticker
     with c_s2:
         bt_strategie = st.selectbox(
@@ -1369,7 +1697,6 @@ elif bereich == "4. Strategie-Backtesting & Signale":
     tage_map = {"1 Jahr": 252, "2 Jahre": 504, "3 Jahre": 756}
     anzeige_tage = tage_map[bt_zeitraum_label]
 
-    # 5 Jahre laden, damit SMA 200 bereits ab dem ersten sichtbaren Tag vollständig berechnet ist
     df_lang = lade_kursdaten_eur(bt_ticker, zeitraum="5y")
     stamm_bt = hole_stammdaten(bt_ticker)
 
@@ -1383,17 +1710,14 @@ elif bereich == "4. Strategie-Backtesting & Signale":
         verkauf_df = df_bt[df_bt["Signal_Verkauf"]]
         gc_df = df_bt[df_bt["Golden_Cross"]]
 
-        # Kompakte Signal-Kennzahlen (ohne Kapitalentwicklung)
         s1, s2, s3, s4 = st.columns(4)
         s1.metric("Aktueller Kurs (€)", f"{float(df_bt['Close'].iloc[-1]):.2f} €")
         s2.metric("🟢 Kaufsignale", f"{len(kauf_df)} Signale")
         s3.metric("🔴 Verkaufssignale", f"{len(verkauf_df)} Signale")
         s4.metric("⭐ Golden Crosses", f"{len(gc_df)} Kreuzungen")
 
-        # Hochauflösender, klar lesbarer Signal-Chart
         fig_bt = go.Figure()
 
-        # 1. Kurslinie mit dezenter Flächenfüllung
         fig_bt.add_trace(
             go.Scatter(
                 x=df_bt.index,
@@ -1407,7 +1731,6 @@ elif bereich == "4. Strategie-Backtesting & Signale":
             )
         )
 
-        # 2. Gleitende Durchschnitte SMA 50 & SMA 200
         fig_bt.add_trace(
             go.Scatter(
                 x=df_bt.index,
@@ -1429,7 +1752,6 @@ elif bereich == "4. Strategie-Backtesting & Signale":
             )
         )
 
-        # 3. Kaufsignale (grüne Dreiecke klar unterhalb der Tageskerze)
         if not kauf_df.empty:
             kauf_y = kauf_df["Low"] * 0.978
             zeige_kauf_text = len(kauf_df) <= 10
@@ -1453,7 +1775,6 @@ elif bereich == "4. Strategie-Backtesting & Signale":
                 )
             )
 
-        # 4. Verkaufssignale (rote Dreiecke klar oberhalb der Tageskerze)
         if not verkauf_df.empty:
             verkauf_y = verkauf_df["High"] * 1.022
             zeige_verkauf_text = len(verkauf_df) <= 10
@@ -1477,7 +1798,6 @@ elif bereich == "4. Strategie-Backtesting & Signale":
                 )
             )
 
-        # 5. Golden Cross Markierungen (Goldener Stern + vertikale Linie direkt am SMA-Schnittpunkt)
         if not gc_df.empty:
             fig_bt.add_trace(
                 go.Scatter(
@@ -1562,9 +1882,168 @@ elif bereich == "4. Strategie-Backtesting & Signale":
             st.dataframe(df_ereignisse.iloc[::-1], use_container_width=True, hide_index=True)
 
 # ==============================================================================
-# BEREICH 5: KRYPTO-ETFs & KAPITALFLÜSSE (7-TAGE & 30-TAGE SUMMEN)
+# BEREICH 5: SAISONALITÄTS-ANALYSE (€)
 # ==============================================================================
-elif bereich == "5. Krypto-ETFs & Kapitalflüsse":
+elif bereich == "5. Saisonalitäts-Analyse (€)":
+    st.header("📅 Saisonalitäts-Analyse: Beste & schwächste Börsenmonate")
+    st.write("Analysiert, in welchen Kalendermonaten eine Aktie historisch am stärksten steigt und wie hoch die Trefferquote ist.")
+
+    col_sais1, col_sais2 = st.columns([1.8, 1.0])
+    with col_sais1:
+        sais_eingabe = st.text_input(
+            "Aktienname oder Kürzel eingeben (z. B. Xiaomi, BYD, Toyota, Nvidia, SAP):",
+            value=st.session_state["ausgewaehlter_ticker"],
+        )
+        sais_ticker, _ = suche_ticker_aus_name(sais_eingabe)
+    with col_sais2:
+        sais_jahre = st.selectbox("Rückblick-Zeitraum:", ["5 Jahre", "10 Jahre", "3 Jahre"], index=0)
+
+    df_sais = lade_kursdaten_eur(sais_ticker, zeitraum="10y" if sais_jahre == "10 Jahre" else ("5y" if sais_jahre == "5 Jahre" else "3y"))
+    stamm_sais = hole_stammdaten(sais_ticker)
+
+    if df_sais.empty or len(df_sais) < 120:
+        st.warning(f"Für {stamm_sais['name']} ({sais_ticker}) liegen noch nicht genügend historische Monatsdaten vor.")
+    else:
+        monats_close = df_sais["Close"].resample("ME").last().dropna()
+        monats_ret = monats_close.pct_change().dropna() * 100
+
+        sais_rows = []
+        for m in range(1, 13):
+            werte = monats_ret[monats_ret.index.month == m]
+            if len(werte) > 0:
+                avg_r = float(werte.mean())
+                win_rate = float((werte > 0).mean() * 100)
+                sais_rows.append({
+                    "Monat_Nr": m,
+                    "Monat": MONATSNAMEN_DE[m - 1],
+                    "Ø Rendite (%)": round(avg_r, 2),
+                    "Trefferquote (%)": round(win_rate, 0),
+                    "Anzahl Jahre": len(werte),
+                })
+
+        df_monate = pd.DataFrame(sais_rows)
+        bester = df_monate.loc[df_monate["Ø Rendite (%)"].idxmax()]
+        schlechtester = df_monate.loc[df_monate["Ø Rendite (%)"].idxmin()]
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Unternehmen", f"{stamm_sais['name']}")
+        m2.metric("Stärkster Monat", f"{bester['Monat']} ({bester['Ø Rendite (%)']:+.2f} %)", f"{int(bester['Trefferquote (%)'])} % Trefferquote")
+        m3.metric("Schwächster Monat", f"{schlechtester['Monat']} ({schlechtester['Ø Rendite (%)']:+.2f} %)", f"{int(schlechtester['Trefferquote (%)'])} % Trefferquote")
+
+        farben = ["#00E676" if v >= 0 else "#FF5252" for v in df_monate["Ø Rendite (%)"]]
+        fig_sais = go.Figure(
+            go.Bar(
+                x=df_monate["Monat"],
+                y=df_monate["Ø Rendite (%)"],
+                marker_color=farben,
+                text=[f"{v:+.1f}%" for v in df_monate["Ø Rendite (%)"]],
+                textposition="outside",
+            )
+        )
+        fig_sais.update_layout(
+            title=f"{stamm_sais['name']} ({sais_ticker}) – Durchschnittliche Monatsrendite ({sais_jahre})",
+            paper_bgcolor="#0E1117",
+            plot_bgcolor="#161B22",
+            font=dict(color="#E6EDF3"),
+            height=430,
+            yaxis=dict(title="Ø Monatsperformance (%)", gridcolor="#21262D"),
+        )
+        st.plotly_chart(fig_sais, use_container_width=True)
+        st.dataframe(df_monate[["Monat", "Ø Rendite (%)", "Trefferquote (%)", "Anzahl Jahre"]], use_container_width=True, hide_index=True)
+
+# ==============================================================================
+# BEREICH 6: SEKTOR-HEATMAP & BRANCHEN-ROTATION
+# ==============================================================================
+elif bereich == "6. Sektor-Heatmap & Rotation":
+    st.header("🗺️ Sektor-Heatmap & Branchen-Rotation (€)")
+    st.write("Zeigt auf einen Blick, in welche Wirtschaftssektoren aktuell Kapital fließt und welche Branchen zurückbleiben.")
+
+    with st.spinner("Lade Sektor-Performance in Euro (€)..."):
+        df_sektor = lade_sektor_heatmap()
+
+    if df_sektor.empty:
+        st.warning("Sektor-Daten konnten gerade nicht geladen werden.")
+    else:
+        df_sektor_sort = df_sektor.sort_values(by="1 Monat (%)", ascending=False)
+
+        z_werte = df_sektor_sort[["1 Tag (%)", "1 Woche (%)", "1 Monat (%)", "3 Monate (%)"]].values
+        fig_hm = go.Figure(
+            data=go.Heatmap(
+                z=z_werte,
+                x=["1 Tag (%)", "1 Woche (%)", "1 Monat (%)", "3 Monate (%)"],
+                y=df_sektor_sort["Sektor"],
+                colorscale=[[0.0, "#B71C1C"], [0.5, "#161B22"], [1.0, "#00C853"]],
+                zmid=0,
+                text=np.round(z_werte, 2),
+                texttemplate="%{text:+.2f} %",
+                textfont={"size": 13, "color": "#FFFFFF"},
+            )
+        )
+        fig_hm.update_layout(
+            title="Sektor-Heatmap: Performance-Vergleich über 4 Zeiträume",
+            paper_bgcolor="#0E1117",
+            plot_bgcolor="#161B22",
+            font=dict(color="#E6EDF3"),
+            height=520,
+            margin=dict(l=20, r=20, t=55, b=20),
+        )
+        st.plotly_chart(fig_hm, use_container_width=True)
+        st.dataframe(df_sektor_sort, use_container_width=True, hide_index=True)
+
+# ==============================================================================
+# BEREICH 7: DIVIDENDEN-KALENDER & AUSSCHÜTTUNGS-CHECK (€)
+# ==============================================================================
+elif bereich == "7. Dividenden-Kalender (€)":
+    st.header("💰 Dividenden-Kalender & Ausschüttungs-Check (€)")
+    st.write("Übersicht über Dividendenrenditen, jährliche Ausschüttung in Euro (€), Ex-Dividenden-Tage und Ausschüttungsquoten.")
+
+    div_zusatz = st.text_input(
+        "Weitere Aktien prüfen (Name oder Kürzel mit Komma, z. B. Allianz, Toyota, BYD, Siemens):",
+        value="",
+    )
+
+    div_liste = list(DIVIDENDEN_STANDARD)
+    if div_zusatz.strip():
+        for teil in div_zusatz.split(","):
+            if teil.strip():
+                tkr, _ = suche_ticker_aus_name(teil.strip())
+                if tkr not in div_liste:
+                    div_liste.insert(0, tkr)
+
+    div_zeilen = []
+    with st.spinner("Lade Dividenden-Daten in Euro (€)..."):
+        for t in div_liste:
+            stamm = hole_stammdaten(t)
+            faktor = hole_wechselkurs_zu_eur(stamm["waehrung"])
+            div_eur = round(stamm["div_rate_orig"] * faktor, 2)
+            payout = stamm["payout_ratio_pct"]
+
+            if stamm["div_rendite_pct"] == 0 and div_eur == 0:
+                bewertung = "Wachstumsaktie (keine Dividende)"
+            elif payout is not None and payout > 85:
+                bewertung = "⚠️ Hohe Ausschüttungsquote (> 85 %)"
+            elif stamm["div_rendite_pct"] >= 3.0:
+                bewertung = "🟢 Attraktiver Dividendenzahler"
+            else:
+                bewertung = "Solide Basis-Dividende"
+
+            div_zeilen.append({
+                "Unternehmen": f"{stamm['name']} ({t})",
+                "Region": erkenne_region(t),
+                "Dividendenrendite (%)": stamm["div_rendite_pct"],
+                "Jahresdividende (€)": div_eur,
+                "Ex-Dividenden-Tag": stamm["ex_div_datum"] or "Noch nicht terminiert",
+                "Ausschüttungsquote": f"{payout:.1f} %" if payout is not None else "k. A.",
+                "Einschätzung": bewertung,
+            })
+
+    df_div = pd.DataFrame(div_zeilen).sort_values(by="Dividendenrendite (%)", ascending=False)
+    st.dataframe(df_div, use_container_width=True, hide_index=True)
+
+# ==============================================================================
+# BEREICH 8: KRYPTO-ETFs & KAPITALFLÜSSE (7-TAGE & 30-TAGE SUMMEN)
+# ==============================================================================
+elif bereich == "8. Krypto-ETFs & Kapitalflüsse":
     st.header("🪙 Krypto-ETFs & Institutionelle Kapitalflüsse (€)")
     st.write("Übersicht über Kurse in Euro (€) sowie tägliche, 7-Tage- und 30-Tage-Zu-/Abflüsse für deine 7 Fokus-Coins.")
 
