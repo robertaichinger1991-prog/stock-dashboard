@@ -1,4 +1,3 @@
-"""
 Stock Screener Pro
 ------------------
 Lokales Streamlit-Dashboard zum Finden und Prüfen von Aktien.
