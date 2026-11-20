@@ -1,6 +1,3 @@
-
-app.py
-
 """
 Stock Screener Pro
 ------------------
